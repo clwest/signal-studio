@@ -22,7 +22,7 @@ class SignalCluster(Base):
     signal_strength = Column(Float, default=0.0)  # 0-1 composite
     status = Column(String(50), default="active")  # active, archived, actioned
     tags = Column(JSON, default=list)
-    metadata = Column(JSON, default=dict)
+    extra_data = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
