@@ -2,7 +2,7 @@
 
 import uuid
 from datetime import datetime, timedelta
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from app.models import SignalCluster, EvidenceCard, SourceItem, ActionCard, init_db, get_engine
 
 DEMO_CLUSTERS = [
