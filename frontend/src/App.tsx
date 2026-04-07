@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Activity, Zap, TrendingUp, Shield, Briefcase, ChevronRight, ArrowLeft, Star, ExternalLink, CheckCircle, Clock, BarChart3 } from 'lucide-react'
 import './App.css'
 
-const API = 'http://localhost:8080/api'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8003/api'
 
 const CATEGORY_CONFIG: Record<string, { icon: React.ReactNode; color: string; bg: string }> = {
   tech: { icon: <Zap size={14} />, color: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/20' },

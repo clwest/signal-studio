@@ -16,16 +16,21 @@ from app.models import (
 
 app = FastAPI(title="SignalStudio", version="1.0.0")
 
+from app.stripe_billing import router as stripe_router
+app.include_router(stripe_router)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5173"],
+    allow_origins=os.getenv("ALLOWED_ORIGINS", "*").split(",") if os.getenv("ALLOWED_ORIGINS") else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Initialize DB
-DATABASE_URL = "sqlite:///./signalstudio.db"
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 engine = get_engine(DATABASE_URL)
 init_db(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)

@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: signal-studio-api
+    plan: free
+    runtime: python
+    buildCommand: cd backend && pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
+    startCommand: cd backend && python -m app.seed 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: SECRET_KEY
+        value: founder-toolkit-shared-secret-2026
+      - key: DATABASE_URL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
