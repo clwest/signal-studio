@@ -1,5 +1,7 @@
 """SignalStudio — FastAPI Backend"""
-
+import os
+from dotenv import load_dotenv
+load_dotenv()
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
