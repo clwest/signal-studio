@@ -1,9 +1,19 @@
 """Seed database with realistic demo data for SignalStudio."""
 
+import os
 import uuid
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+load_dotenv()
 from sqlalchemy.orm import Session, sessionmaker
 from app.models import SignalCluster, EvidenceCard, SourceItem, ActionCard, init_db, get_engine
+
+
+def _resolve_database_url() -> str:
+    url = os.getenv("DATABASE_URL", "sqlite:///./signalstudio.db")
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    return url
 
 DEMO_CLUSTERS = [
     {
@@ -151,8 +161,10 @@ DEMO_CLUSTERS = [
 ]
 
 
-def seed_database(database_url: str = "sqlite:///./signalstudio.db"):
+def seed_database(database_url: str | None = None):
     """Seed the database with demo signal clusters."""
+    if database_url is None:
+        database_url = _resolve_database_url()
     engine = init_db(database_url)
     SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()

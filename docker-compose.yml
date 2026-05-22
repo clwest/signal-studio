@@ -1,0 +1,79 @@
+# SignalStudio — prod-like fleet compose
+#
+# Pattern reference: /Users/donkeyking/development/infra/README.md
+#
+# Note on port 8080: SignalStudio's backend defaults to :8080 (not the
+# 8003-8008 range the founder-toolkit repos use). The compose mapping
+# matches the in-app default to keep VITE_API_URL behavior identical
+# in containerized vs. native dev.
+
+services:
+  signal_studio_postgres:
+    image: pgvector/pgvector:pg16
+    container_name: signal_studio_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-signalstudio}
+      POSTGRES_USER: ${POSTGRES_USER:-signalstudio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+    volumes:
+      - signal_studio_postgres_data:/var/lib/postgresql/data
+    networks:
+      - fleet-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-signalstudio} -d ${POSTGRES_DB:-signalstudio}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  signal_studio_api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: signal_studio_api
+    restart: unless-stopped
+    depends_on:
+      signal_studio_postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-signalstudio}:${POSTGRES_PASSWORD:-change-me-in-production}@signal_studio_postgres:5432/${POSTGRES_DB:-signalstudio}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-gpt-5-mini}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-rotate-me}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+    networks:
+      - fleet-net
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8080/api/health\",timeout=2).status==200 else 1)'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  signal_studio_web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080/api}
+    container_name: signal_studio_web
+    restart: unless-stopped
+    depends_on:
+      - signal_studio_api
+    ports:
+      - "5173:80"
+    networks:
+      - fleet-net
+
+volumes:
+  signal_studio_postgres_data:
+    name: signal_studio_postgres_data
+
+networks:
+  fleet-net:
+    external: true
+    name: fleet-net
