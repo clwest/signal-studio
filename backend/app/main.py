@@ -59,6 +59,13 @@ def health():
 class BrainAskRequest(BaseModel):
     message: str
     conversation_id: Optional[str] = None
+    # Session 1128 Phase 2B — optional fleet routing fields. When any of
+    # mode/agent/role is set, brain_client builds a `routing` block on
+    # the u-d-b /api/pa/chat/ payload so the Phase 2A dispatcher can
+    # force-route (or hint-route) to a specific u-d-b AGENT_MAP key.
+    agent: Optional[str] = None
+    role: Optional[str] = None
+    mode: Optional[str] = None
 
 
 @app.post("/api/brain/ask")
@@ -66,7 +73,15 @@ def brain_ask(req: BrainAskRequest):
     from app.brain_client import ask
     if not req.message.strip():
         raise HTTPException(400, "message is required")
-    result = ask(req.message, conversation_id=req.conversation_id, workspace="signal-studio")
+    result = ask(
+        req.message,
+        conversation_id=req.conversation_id,
+        workspace="signal-studio",
+        app_slug="signal-studio",
+        agent=req.agent,
+        role=req.role,
+        mode=req.mode,
+    )
     if not result.get("ok"):
         raise HTTPException(502, result.get("error", "brain unreachable"))
     return result
