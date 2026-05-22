@@ -8,6 +8,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import sessionmaker, joinedload
 
@@ -49,6 +50,26 @@ def get_db():
 @app.get("/api/health")
 def health():
     return {"status": "healthy", "service": "SignalStudio", "timestamp": datetime.utcnow().isoformat()}
+
+
+# ── Brain bridge — proxy questions to u-d-b's PA (Rigby) ───────────────────
+# SignalStudio is currently auth-less so the endpoint is open. Future auth
+# layer can wrap this with a Depends() guard.
+
+class BrainAskRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+
+
+@app.post("/api/brain/ask")
+def brain_ask(req: BrainAskRequest):
+    from app.brain_client import ask
+    if not req.message.strip():
+        raise HTTPException(400, "message is required")
+    result = ask(req.message, conversation_id=req.conversation_id, workspace="signal-studio")
+    if not result.get("ok"):
+        raise HTTPException(502, result.get("error", "brain unreachable"))
+    return result
 
 
 @app.get("/api/signals")

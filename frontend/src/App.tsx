@@ -204,6 +204,7 @@ export default function App() {
   const [selectedSignal, setSelectedSignal] = useState<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [loading, setLoading] = useState(true)
+  const [view, setView] = useState<'signals' | 'brain'>('signals')
 
   useEffect(() => {
     Promise.all([
@@ -224,6 +225,19 @@ export default function App() {
     )
   }
 
+  if (view === 'brain') {
+    return (
+      <div className="min-h-screen bg-gray-950 p-6">
+        <div className="max-w-3xl mx-auto">
+          <button onClick={() => setView('signals')} className="flex items-center gap-1 text-gray-500 hover:text-white mb-6 transition-colors text-sm">
+            <ArrowLeft size={14} /> Back to signals
+          </button>
+          <BrainPage />
+        </div>
+      </div>
+    )
+  }
+
   const categories = ['all', 'tech', 'business', 'crypto', 'career', 'security']
 
   return (
@@ -236,6 +250,7 @@ export default function App() {
               SignalStudio
             </h1>
             <p className="text-gray-500 text-sm mt-1">Real-time opportunity intelligence</p>
+            <button onClick={() => setView('brain')} className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition">→ Ask Rigby (u-d-b PA)</button>
           </div>
           {stats && (
             <div className="flex items-center gap-4 text-xs text-gray-500">
@@ -274,6 +289,59 @@ export default function App() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Brain bridge page ─────────────────────────────────────────────────────
+function BrainPage() {
+  const [message, setMessage] = useState('')
+  const [answer, setAnswer] = useState<string | null>(null)
+  const [traceId, setTraceId] = useState<string | null>(null)
+  const [latency, setLatency] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+
+  async function ask() {
+    if (!message.trim()) return
+    setLoading(true); setAnswer(null); setError(null); setTraceId(null); setLatency(null)
+    try {
+      const r = await fetch(`${API}/brain/ask`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message }),
+      })
+      const d = await r.json()
+      if (!r.ok) setError(typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail || d))
+      else { setAnswer(d.answer || '(no answer field returned)'); setTraceId(d.trace_id || null); setLatency(d.latency_ms ?? null) }
+    } catch (e: any) { setError(e.message || 'request failed') }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <div>
+      <h1 className="text-3xl font-bold text-white mb-2">Brain</h1>
+      <p className="text-gray-400 mb-6">
+        Ask Rigby (the u-d-b Personal Assistant) anything. SignalStudio proxies your question through the fleet brain bridge.
+      </p>
+      <textarea value={message} onChange={e => setMessage(e.target.value)}
+        placeholder="Ask anything — Rigby has u-d-b's full agent network behind her."
+        className="w-full h-32 px-4 py-3 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 resize-none focus:border-blue-500 focus:outline-none" />
+      <button onClick={ask} disabled={loading || !message.trim()}
+        className="mt-3 px-5 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 rounded-lg text-white font-medium transition">
+        {loading ? 'Thinking...' : 'Ask Rigby'}
+      </button>
+      {error && <div className="mt-6 p-4 rounded-lg bg-red-900/30 border border-red-700/50 text-red-200 text-sm whitespace-pre-wrap"><div className="font-medium text-red-300 mb-1">Brain unreachable</div>{error}</div>}
+      {answer && (
+        <div className="mt-6">
+          <div className="p-4 rounded-lg bg-gray-900 border border-gray-800 text-gray-100 whitespace-pre-wrap">{answer}</div>
+          {(traceId || latency !== null) && (
+            <div className="mt-2 text-xs text-gray-500 flex gap-4">
+              {traceId && <span>trace: {traceId}</span>}
+              {latency !== null && <span>latency: {latency}ms</span>}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
