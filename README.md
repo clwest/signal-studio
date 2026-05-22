@@ -6,7 +6,7 @@ Signal clustering + evidence-backed action cards for market research.
 
 ```bash
 bash start.sh
-# Backend:  http://localhost:8080
+# Backend:  http://localhost:8007
 # Frontend: http://localhost:5173
 ```
 
@@ -23,6 +23,6 @@ docker compose up -d                                              # prod-like
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up # dev
 ```
 
-Reach it at `http://localhost:8080/api/health` and
+Reach it at `http://localhost:8007/api/health` and
 `http://localhost:5173/`. Fleet pattern reference:
 [`/Users/donkeyking/development/infra/README.md`](/Users/donkeyking/development/infra/README.md).

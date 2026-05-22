@@ -14,8 +14,8 @@ pip install -r requirements.txt -q
 echo "🌱 Seeding database..."
 python -c "from app.seed import seed_database; seed_database()"
 
-echo "🔧 Starting API server on :8080..."
-uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload &
+echo "🔧 Starting API server on :8007..."
+uvicorn app.main:app --host 0.0.0.0 --port 8007 --reload &
 BACKEND_PID=$!
 cd ..
 
@@ -29,8 +29,8 @@ cd ..
 echo ""
 echo "✅ SignalStudio is running!"
 echo "   Frontend: http://localhost:5173"
-echo "   Backend:  http://localhost:8080"
-echo "   API Docs: http://localhost:8080/docs"
+echo "   Backend:  http://localhost:8007"
+echo "   API Docs: http://localhost:8007/docs"
 echo ""
 echo "Press Ctrl+C to stop both servers"
 

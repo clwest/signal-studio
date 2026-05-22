@@ -2,7 +2,7 @@
 #
 # Pattern reference: /Users/donkeyking/development/infra/README.md
 #
-# Note on port 8080: SignalStudio's backend defaults to :8080 (not the
+# Note on port 8007: SignalStudio's backend defaults to :8007 (not the
 # 8003-8008 range the founder-toolkit repos use). The compose mapping
 # matches the in-app default to keep VITE_API_URL behavior identical
 # in containerized vs. native dev.
@@ -42,13 +42,13 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-only-rotate-me}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
-      PORT: "8080"
+      PORT: "8007"
     ports:
-      - "8080:8080"
+      - "8007:8007"
     networks:
       - fleet-net
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8080/api/health\",timeout=2).status==200 else 1)'"]
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8007/api/health\",timeout=2).status==200 else 1)'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -59,7 +59,7 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8080/api}
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8007/api}
     container_name: signal_studio_web
     restart: unless-stopped
     depends_on:
