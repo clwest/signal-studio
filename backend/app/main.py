@@ -179,6 +179,61 @@ def list_signals(
         db.close()
 
 
+@app.get("/api/signals/curated")
+def list_curated_signals(limit: int = Query(default=10, le=50)):
+    """List the latest curated signal clusters (Session 1131 Phase 2).
+
+    Returns clusters in the most recent `signal.curated_published`
+    snapshot, ordered by `curated_rank` ascending. Source of truth is
+    u-d-b's `CuratedSignalSnapshot` table; this endpoint reads the
+    convenience columns populated by the curated handler.
+
+    Empty list means no curated snapshot has been received yet (the
+    SignalCuratorAgent runs daily at 6 AM MST per the u-d-b beat
+    schedule; first run won't show until that fires).
+    """
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(SignalCluster)
+            .filter(SignalCluster.curated_rank.isnot(None))
+            .order_by(SignalCluster.curated_rank.asc())
+            .limit(limit)
+            .all()
+        )
+        if not rows:
+            return {
+                "curated": [],
+                "snapshot_id": None,
+                "total": 0,
+            }
+        snapshot_id = rows[0].curated_snapshot_id
+        return {
+            "curated": [
+                {
+                    "id": str(c.id),
+                    "external_cluster_id": c.external_cluster_id,
+                    "rank": c.curated_rank,
+                    "curated_score": c.curated_score,
+                    "title": c.title,
+                    "summary": c.summary[:200] if c.summary else "",
+                    "category": c.category,
+                    "confidence_score": c.confidence_score,
+                    "signal_strength": c.signal_strength,
+                    "source_count": c.source_count,
+                    "tags": c.tags or [],
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                    "evidence_count": len(c.evidence_cards),
+                }
+                for c in rows
+            ],
+            "snapshot_id": snapshot_id,
+            "total": len(rows),
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/signals/{signal_id}")
 def get_signal(signal_id: UUID):
     """Get full signal cluster detail with evidence cards and sources."""

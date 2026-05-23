@@ -42,6 +42,16 @@ interface Stats {
   evidence_cards_total: number; action_cards_total: number
 }
 
+// Session 1131 Phase 2 — curated signals (SignalCuratorAgent top 10)
+interface CuratedSignal {
+  id: string; external_cluster_id: string | null
+  rank: number; curated_score: number
+  title: string; summary: string; category: string
+  confidence_score: number; signal_strength: number
+  source_count: number; tags: string[]
+  created_at: string; evidence_count: number
+}
+
 function ConfidenceBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100)
   const color = pct >= 85 ? 'text-green-400 bg-green-500/10' : pct >= 70 ? 'text-blue-400 bg-blue-500/10' : pct >= 50 ? 'text-amber-400 bg-amber-500/10' : 'text-red-400 bg-red-500/10'
@@ -200,22 +210,38 @@ function SignalDetail({ signalId, onBack }: { signalId: string; onBack: () => vo
 
 export default function App() {
   const [signals, setSignals] = useState<Signal[]>([])
+  const [curated, setCurated] = useState<CuratedSignal[]>([])
+  const [curatedSnapshotId, setCuratedSnapshotId] = useState<string | null>(null)
   const [stats, setStats] = useState<Stats | null>(null)
   const [selectedSignal, setSelectedSignal] = useState<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [loading, setLoading] = useState(true)
-  const [view, setView] = useState<'signals' | 'brain'>('signals')
+  const [view, setView] = useState<'signals' | 'curated' | 'brain'>('signals')
 
   useEffect(() => {
-    Promise.all([
-      fetch(`${API}/signals?category=${categoryFilter}`).then(r => r.json()),
-      fetch(`${API}/stats`).then(r => r.json()),
-    ]).then(([sigData, statsData]) => {
-      setSignals(sigData.signals || [])
-      setStats(statsData)
-      setLoading(false)
-    }).catch(() => setLoading(false))
-  }, [categoryFilter])
+    if (view === 'brain') return
+    setLoading(true)
+    if (view === 'curated') {
+      Promise.all([
+        fetch(`${API}/signals/curated`).then(r => r.json()),
+        fetch(`${API}/stats`).then(r => r.json()),
+      ]).then(([curData, statsData]) => {
+        setCurated(curData.curated || [])
+        setCuratedSnapshotId(curData.snapshot_id || null)
+        setStats(statsData)
+        setLoading(false)
+      }).catch(() => setLoading(false))
+    } else {
+      Promise.all([
+        fetch(`${API}/signals?category=${categoryFilter}`).then(r => r.json()),
+        fetch(`${API}/stats`).then(r => r.json()),
+      ]).then(([sigData, statsData]) => {
+        setSignals(sigData.signals || [])
+        setStats(statsData)
+        setLoading(false)
+      }).catch(() => setLoading(false))
+    }
+  }, [categoryFilter, view])
 
   if (selectedSignal) {
     return (
@@ -261,24 +287,65 @@ export default function App() {
           )}
         </div>
 
-        <div className="flex items-center gap-2 mb-6">
-          {categories.map(cat => {
-            const config = CATEGORY_CONFIG[cat] || CATEGORY_CONFIG.general
-            return (
-              <button key={cat} onClick={() => setCategoryFilter(cat)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  categoryFilter === cat ? 'bg-blue-600 text-white' : 'bg-gray-900 text-gray-500 hover:text-gray-300 hover:bg-gray-800'
-                }`}>
-                {cat === 'all' ? 'All Signals' : <span className="flex items-center gap-1">{config.icon} {cat}</span>}
-              </button>
-            )
-          })}
+        {/* Session 1131 Phase 2 — view toggle between All Signals + Curated Top 10 */}
+        <div className="flex items-center gap-2 mb-4">
+          <button onClick={() => setView('signals')}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              view === 'signals' ? 'bg-blue-600 text-white' : 'bg-gray-900 text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+            }`}>
+            All Signals
+          </button>
+          <button onClick={() => setView('curated')}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-1.5 ${
+              view === 'curated' ? 'bg-amber-600 text-white' : 'bg-gray-900 text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+            }`}>
+            <Star size={12} /> Curated Top 10
+          </button>
+          {view === 'curated' && curatedSnapshotId && (
+            <span className="text-xs text-gray-600 ml-2 font-mono">snapshot: {curatedSnapshotId.slice(0, 8)}</span>
+          )}
         </div>
+
+        {view === 'signals' && (
+          <div className="flex items-center gap-2 mb-6">
+            {categories.map(cat => {
+              const config = CATEGORY_CONFIG[cat] || CATEGORY_CONFIG.general
+              return (
+                <button key={cat} onClick={() => setCategoryFilter(cat)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                    categoryFilter === cat ? 'bg-blue-600 text-white' : 'bg-gray-900 text-gray-500 hover:text-gray-300 hover:bg-gray-800'
+                  }`}>
+                  {cat === 'all' ? 'All Signals' : <span className="flex items-center gap-1">{config.icon} {cat}</span>}
+                </button>
+              )
+            })}
+          </div>
+        )}
 
         {loading ? (
           <div className="flex items-center justify-center h-64 text-gray-500">
-            <Clock className="animate-spin mr-2" size={16} /> Loading signals...
+            <Clock className="animate-spin mr-2" size={16} /> Loading {view === 'curated' ? 'curated set' : 'signals'}...
           </div>
+        ) : view === 'curated' ? (
+          curated.length === 0 ? (
+            <div className="text-center p-12 text-gray-600">
+              <div className="mb-2">No curated snapshot yet.</div>
+              <div className="text-xs text-gray-700">
+                SignalCuratorAgent runs daily at 6 AM MST. Once it fires,
+                the top 10 curated signals appear here with rank + score.
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {curated.map(c => (
+                <CuratedSignalCard
+                  key={c.id}
+                  signal={c}
+                  onClick={() => setSelectedSignal(c.id)}
+                />
+              ))}
+            </div>
+          )
         ) : signals.length === 0 ? (
           <div className="text-center p-12 text-gray-600">No signals found. Run the seed script to populate demo data.</div>
         ) : (
@@ -289,6 +356,46 @@ export default function App() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+
+// Session 1131 Phase 2 — Curated card with rank badge + curated_score
+function CuratedSignalCard({ signal, onClick }: { signal: CuratedSignal; onClick: () => void }) {
+  const cat = CATEGORY_CONFIG[signal.category] || CATEGORY_CONFIG.general
+  return (
+    <div onClick={onClick} className={`relative p-5 rounded-xl border ${cat.bg} hover:scale-[1.01] transition-all cursor-pointer group`}>
+      <div className="absolute -top-2 -left-2 w-8 h-8 rounded-full bg-amber-500 text-gray-950 font-bold text-sm flex items-center justify-center shadow-lg">
+        {signal.rank}
+      </div>
+      <div className="flex items-start justify-between mb-3 ml-6">
+        <div className="flex items-center gap-2">
+          <span className={cat.color}>{cat.icon}</span>
+          <span className={`text-xs uppercase tracking-wide ${cat.color}`}>{signal.category}</span>
+        </div>
+        <span className="text-xs font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">
+          score {signal.curated_score.toFixed(3)}
+        </span>
+      </div>
+      <h3 className="text-white font-semibold text-sm leading-snug mb-2 group-hover:text-blue-300 transition-colors">
+        {signal.title}
+      </h3>
+      <p className="text-gray-500 text-xs leading-relaxed mb-3">{signal.summary}</p>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3 text-xs text-gray-600">
+          <span className="flex items-center gap-1"><Star size={10} /> {signal.evidence_count} evidence</span>
+          <span className="flex items-center gap-1"><ExternalLink size={10} /> {signal.source_count} sources</span>
+        </div>
+        <ChevronRight size={14} className="text-gray-600 group-hover:text-blue-400 transition-colors" />
+      </div>
+      {signal.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-3">
+          {signal.tags.slice(0, 4).map(tag => (
+            <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-gray-800/50 text-gray-500">#{tag}</span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
