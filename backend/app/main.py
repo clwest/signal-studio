@@ -10,6 +10,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import desc
 from sqlalchemy.orm import sessionmaker, joinedload
@@ -177,6 +178,46 @@ def list_signals(
         }
     finally:
         db.close()
+
+
+@app.get("/api/signals/events")
+async def stream_signal_events():
+    """Browser-facing SSE channel for curated-set refresh notifications.
+
+    Session 1132 (C): when u-d-b emits `signal.curated_published` and
+    `signal_ingest._apply_curated_snapshot()` finishes committing the
+    new top-10, this endpoint pushes a `curated:refreshed` event to
+    every connected browser. The React Curated tab opens an
+    EventSource here and either auto-refreshes or shows a toast on
+    receipt.
+
+    Browser-facing only — no auth in this MVP (the curated set is
+    app-wide, not user-scoped). When user-personalized curation
+    arrives, gate this endpoint behind a session cookie.
+
+    Wire format:
+        event: stream.opened
+        data: {"event": "stream.opened", "ts": <unix>}
+
+        event: curated:refreshed
+        data: {"event": "curated:refreshed", "snapshot_id": "<uuid>",
+               "top_n": 10, "ts": <unix>}
+
+        : ping              (keep-alive every 15s when idle)
+    """
+    from app.browser_events import curated_event_stream
+
+    return StreamingResponse(
+        curated_event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Disable nginx-style proxy buffering so events flush in
+            # real time. Harmless when there's no nginx in front.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.get("/api/signals/curated")

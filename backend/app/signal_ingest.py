@@ -550,6 +550,19 @@ def _apply_curated_snapshot(session_factory: sessionmaker, payload: dict) -> Non
             "applied=%d items=%d",
             snapshot_id, applied, len(items),
         )
+
+        # Session 1132 (C): notify any browser EventSource subscribers
+        # so the Curated tab can refresh without polling. Best-effort —
+        # in-memory broadcast; failure to deliver to a subscriber drops
+        # silently. Import lazily to avoid a startup-time circular.
+        try:
+            from app.browser_events import notify_curated_refreshed
+            notify_curated_refreshed(snapshot_id, applied)
+        except Exception as e:  # pragma: no cover
+            logger.warning(
+                "[signal-ingest] browser notify failed snapshot=%s: %s",
+                snapshot_id, e,
+            )
     except Exception as e:
         session.rollback()
         logger.exception(
