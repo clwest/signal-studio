@@ -21,6 +21,14 @@ class SignalCluster(Base):
     # have no upstream counterpart). Indexed unique-where-not-null via
     # a partial index applied at startup; see signal_ingest._ensure_schema.
     external_cluster_id = Column(String(64), index=True, nullable=True)
+    # Session 1131 Phase 2 — curated convenience fields. Populated from
+    # `signal.curated_published` events; latest snapshot wins (u-d-b's
+    # CuratedSignalSnapshot table is the audit-trail source of truth).
+    # `curated_rank` IS NOT NULL means this cluster is in the latest
+    # curated top-N; ORDER BY curated_rank ASC for the Curated tab.
+    curated_rank = Column(Integer, index=True, nullable=True)
+    curated_score = Column(Float, nullable=True)
+    curated_snapshot_id = Column(String(64), nullable=True)
     title = Column(String(500), nullable=False)
     summary = Column(Text, default="")
     category = Column(String(100), default="general")  # tech, finance, market, career, etc.

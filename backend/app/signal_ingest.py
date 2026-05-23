@@ -93,8 +93,32 @@ def _ensure_schema(engine) -> None:
                 "ADD COLUMN external_cluster_id VARCHAR(64)"
             )
 
-        # 2. Unique partial index — works on both dialects. IF NOT EXISTS
-        #    keeps it idempotent.
+        # Session 1131 Phase 2 — curated convenience columns. Idempotent
+        # ALTER + index across Postgres + SQLite. Same pattern as the
+        # Phase 1 external_cluster_id add.
+        if "curated_rank" not in existing_cols:
+            logger.info(
+                "[signal-ingest] adding signal_clusters.curated_rank column"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters ADD COLUMN curated_rank INTEGER"
+            )
+        if "curated_score" not in existing_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters ADD COLUMN curated_score REAL"
+            )
+        if "curated_snapshot_id" not in existing_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters ADD COLUMN curated_snapshot_id VARCHAR(64)"
+            )
+        # Index on curated_rank for cheap "list curated set" queries.
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_signal_clusters_curated_rank "
+            "ON signal_clusters(curated_rank)"
+        )
+
+        # 2. Unique partial index on external_cluster_id — works on both
+        #    dialects. IF NOT EXISTS keeps it idempotent.
         if dialect == "sqlite":
             conn.exec_driver_sql(
                 "CREATE UNIQUE INDEX IF NOT EXISTS "
@@ -417,13 +441,13 @@ Handler = Callable[[dict, sessionmaker], None]
 def _handle_signal_event(envelope: dict, session_factory: sessionmaker) -> None:
     """Route any `signal.*` event to its specific handler.
 
-    Phase 1 ships `signal.cluster_promoted` only. Future events
-    (`signal.curated_published` from Phase 2's SignalCuratorAgent,
-    `signal.cluster_decayed`, etc.) plug in here.
+    Phase 1 ships `signal.cluster_promoted`. Phase 2 adds
+    `signal.curated_published` (the curated top-N snapshot).
     """
     event_type = envelope.get("event", "")
     data = envelope.get("data") or {}
     payload = data.get("payload") or {}
+
     if event_type == "signal.cluster_promoted":
         seq = data.get("seq")
         ext_id = upsert_envelope(session_factory, payload)
@@ -440,11 +464,100 @@ def _handle_signal_event(envelope: dict, session_factory: sessionmaker) -> None:
                 ext_id,
             )
         return
-    # Phase 1 only ships cluster_promoted; quietly drop anything else
-    # under the signal.* prefix until we explicitly handle it.
+
+    if event_type == "signal.curated_published":
+        _apply_curated_snapshot(session_factory, payload)
+        return
+
+    # Anything else under signal.* — quiet drop. Future event types
+    # (cluster_decayed, etc.) plug in above by name.
     logger.debug(
-        "[signal-ingest] ignoring %s — not implemented in Phase 1", event_type
+        "[signal-ingest] ignoring %s — no handler", event_type
     )
+
+
+# ─── Phase 2: curated snapshot handler ─────────────────────────────────
+
+
+def _apply_curated_snapshot(session_factory: sessionmaker, payload: dict) -> None:
+    """Apply a `signal.curated_published` snapshot: latest run wins.
+
+    Session 1131 Phase 2 (Rigby's lock #2): u-d-b's CuratedSignalSnapshot
+    is the audit-trail source of truth; signal-studio only needs to know
+    which clusters are CURRENTLY curated and at what rank. We:
+
+      1. Clear curated_rank/score/snapshot_id on ALL rows. The previous
+         snapshot's set becomes empty.
+      2. For each item in the new snapshot, upsert the cluster (in case
+         we somehow missed the cluster_promoted event for it) then
+         stamp curated_rank/score/snapshot_id.
+
+    Payload shape (from build_curated_envelope on u-d-b side):
+        {
+          "snapshot_id": "<uuid>",
+          "scoring_formula_version": "...",
+          "top_n": 10,
+          "items": [
+            {"rank": 1, "curated_score": 0.92, "group_key": "...",
+             "cluster": {<full cluster envelope>}},
+            ...
+          ],
+          "cluster_ids": [...],
+          ...
+        }
+    """
+    snapshot_id = payload.get("snapshot_id")
+    items = payload.get("items") or []
+    if not snapshot_id or not items:
+        logger.warning(
+            "[signal-ingest] curated_published payload missing "
+            "snapshot_id or items; skipping"
+        )
+        return
+
+    session = session_factory()
+    try:
+        # 1. Clear the previous curated set. Latest snapshot wins.
+        session.query(SignalCluster).filter(
+            SignalCluster.curated_rank.isnot(None)
+        ).update({
+            "curated_rank": None,
+            "curated_score": None,
+            "curated_snapshot_id": None,
+        }, synchronize_session=False)
+
+        applied = 0
+        for item in items:
+            cluster_env = item.get("cluster") or {}
+            rank = item.get("rank")
+            score = item.get("curated_score")
+            if not isinstance(rank, int):
+                continue
+            # Upsert in case the cluster_promoted event for this row
+            # was missed (e.g. consumer was offline). Same translator
+            # path as Phase 1.
+            row = upsert_cluster_from_envelope(session, cluster_env)
+            if row is None:
+                continue
+            row.curated_rank = rank
+            row.curated_score = float(score) if score is not None else None
+            row.curated_snapshot_id = snapshot_id
+            applied += 1
+
+        session.commit()
+        logger.info(
+            "[signal-ingest] curated snapshot applied snapshot=%s "
+            "applied=%d items=%d",
+            snapshot_id, applied, len(items),
+        )
+    except Exception as e:
+        session.rollback()
+        logger.exception(
+            "[signal-ingest] curated snapshot apply failed snapshot=%s: %s",
+            snapshot_id, e,
+        )
+    finally:
+        session.close()
 
 
 # Ordered list of (prefix, handler) — Rigby's lock C shape. Handlers
@@ -508,6 +621,7 @@ async def consume_fleet_events(session_factory: sessionmaker) -> None:
 
 __all__ = [
     "HANDLERS",
+    "_apply_curated_snapshot",
     "_ensure_schema",
     "backfill_from_pull_endpoint",
     "consume_fleet_events",
