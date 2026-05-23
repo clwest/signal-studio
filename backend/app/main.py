@@ -1,4 +1,6 @@
 """SignalStudio — FastAPI Backend"""
+import asyncio
+import logging
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -16,6 +18,8 @@ from app.models import (
     SignalCluster, EvidenceCard, SourceItem, ActionCard,
     init_db, get_engine,
 )
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SignalStudio", version="1.0.0")
 
@@ -37,6 +41,53 @@ if DATABASE_URL.startswith("postgres://"):
 engine = get_engine(DATABASE_URL)
 init_db(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
+
+# Session 1131 Phase 1: idempotent schema migration for the new
+# `external_cluster_id` column on signal_clusters. `init_db()` only
+# creates missing tables — it does NOT alter existing tables to add
+# columns. The ensure-schema helper handles the column add + the
+# unique partial index across Postgres + SQLite.
+from app.signal_ingest import (
+    _ensure_schema,
+    backfill_from_pull_endpoint,
+    consume_fleet_events,
+)
+_ensure_schema(engine)
+
+
+@app.on_event("startup")
+async def _start_fleet_signal_ingest():
+    """Kick off the fleet-event consumer + run a startup backfill.
+
+    The consumer is a long-lived asyncio task; we don't await it. The
+    backfill is run as a separate task so a slow upstream doesn't
+    block startup (FastAPI's `startup` hook is awaited before the
+    server starts accepting connections).
+
+    Gated on FLEET_SERVICE_SECRET — if the env var is missing
+    (cold-start dev mode, no fleet identity provisioned yet) we skip
+    both. The seed fallback in seed.py keeps the UI populated.
+    """
+    if not os.environ.get("FLEET_SERVICE_SECRET"):
+        logger.info(
+            "[startup] FLEET_SERVICE_SECRET not set — skipping fleet "
+            "signal ingest; seed data will remain authoritative"
+        )
+        return
+
+    async def _backfill_in_background():
+        try:
+            n = await backfill_from_pull_endpoint(SessionLocal)
+            logger.info("[startup] backfill complete; upserted %d clusters", n)
+        except Exception as e:  # pragma: no cover
+            logger.exception("[startup] backfill failed: %s", e)
+
+    # Run backfill in the background — don't block server startup if
+    # upstream is slow / unreachable.
+    asyncio.create_task(_backfill_in_background())
+    # Long-running consumer.
+    asyncio.create_task(consume_fleet_events(SessionLocal))
+    logger.info("[startup] fleet signal ingest tasks spawned")
 
 
 def get_db():

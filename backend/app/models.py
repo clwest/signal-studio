@@ -14,6 +14,13 @@ class SignalCluster(Base):
     __tablename__ = "signal_clusters"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # Session 1131 Phase 1 — u-d-b SignalCluster.id (UUID stringified).
+    # Upsert key for `signal.cluster_promoted` events from the fleet
+    # event stream + the GET /api/fleet/signals/clusters backfill.
+    # Nullable so legacy/locally-seeded rows still parse (those rows
+    # have no upstream counterpart). Indexed unique-where-not-null via
+    # a partial index applied at startup; see signal_ingest._ensure_schema.
+    external_cluster_id = Column(String(64), index=True, nullable=True)
     title = Column(String(500), nullable=False)
     summary = Column(Text, default="")
     category = Column(String(100), default="general")  # tech, finance, market, career, etc.

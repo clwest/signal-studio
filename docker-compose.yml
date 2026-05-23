@@ -45,6 +45,15 @@ services:
       BRAIN_URL: ${BRAIN_URL:-http://host.docker.internal:8000}
       BRAIN_TOKEN: ${BRAIN_TOKEN:-}
       BRAIN_CONVERSATION: ${BRAIN_CONVERSATION:-}
+      # Session 1131 Phase 1 — fleet signing for the signal-cluster
+      # pull endpoint + event stream. FLEET_APP_SLUG must match the
+      # u-d-b FleetServiceIdentity (`signal-studio`). FLEET_KEY_ID and
+      # FLEET_SERVICE_SECRET come from u-d-b's
+      # `python manage.py provision_fleet_identity` output (shown
+      # exactly once at mint time).
+      FLEET_APP_SLUG: ${FLEET_APP_SLUG:-signal-studio}
+      FLEET_KEY_ID: ${FLEET_KEY_ID:-}
+      FLEET_SERVICE_SECRET: ${FLEET_SERVICE_SECRET:-}
       PORT: "8007"
     extra_hosts:
       - "host.docker.internal:host-gateway"
