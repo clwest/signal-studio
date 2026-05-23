@@ -212,11 +212,28 @@ export default function App() {
   const [signals, setSignals] = useState<Signal[]>([])
   const [curated, setCurated] = useState<CuratedSignal[]>([])
   const [curatedSnapshotId, setCuratedSnapshotId] = useState<string | null>(null)
+  // Session 1132 (C) — SSE indicator. When a `curated:refreshed`
+  // event lands while the user is on the Curated tab, this holds the
+  // new snapshot_id; the UI shows a "🟢 New curated set — refresh"
+  // pill the user can click to refetch.
+  const [pendingSnapshotId, setPendingSnapshotId] = useState<string | null>(null)
   const [stats, setStats] = useState<Stats | null>(null)
   const [selectedSignal, setSelectedSignal] = useState<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [loading, setLoading] = useState(true)
   const [view, setView] = useState<'signals' | 'curated' | 'brain'>('signals')
+
+  // Stable refetch helper so the SSE handler can call it without
+  // chasing the useEffect dependency closure.
+  const refetchCurated = () => {
+    setLoading(true)
+    fetch(`${API}/signals/curated`).then(r => r.json()).then(curData => {
+      setCurated(curData.curated || [])
+      setCuratedSnapshotId(curData.snapshot_id || null)
+      setPendingSnapshotId(null)
+      setLoading(false)
+    }).catch(() => setLoading(false))
+  }
 
   useEffect(() => {
     if (view === 'brain') return
@@ -228,6 +245,7 @@ export default function App() {
       ]).then(([curData, statsData]) => {
         setCurated(curData.curated || [])
         setCuratedSnapshotId(curData.snapshot_id || null)
+        setPendingSnapshotId(null)
         setStats(statsData)
         setLoading(false)
       }).catch(() => setLoading(false))
@@ -242,6 +260,33 @@ export default function App() {
       }).catch(() => setLoading(false))
     }
   }, [categoryFilter, view])
+
+  // Session 1132 (C) — SSE subscription only while the Curated tab
+  // is the active view. Closes the connection when the user navigates
+  // away so we don't burn server fanout on a hidden tab.
+  useEffect(() => {
+    if (view !== 'curated') return
+    const es = new EventSource(`${API}/signals/events`)
+    es.addEventListener('curated:refreshed', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data)
+        const newId = data?.snapshot_id
+        if (!newId) return
+        // If the user already has the latest, no-op. Otherwise stash
+        // the new id and show the refresh pill.
+        setCuratedSnapshotId(current => {
+          if (current === newId) return current
+          setPendingSnapshotId(newId)
+          return current
+        })
+      } catch {
+        // Malformed payload — ignore. The user can refresh manually.
+      }
+    })
+    // Hello + keep-alive events arrive but we don't need to handle
+    // them; EventSource auto-reconnects on network drops.
+    return () => { es.close() }
+  }, [view])
 
   if (selectedSignal) {
     return (
@@ -303,6 +348,16 @@ export default function App() {
           </button>
           {view === 'curated' && curatedSnapshotId && (
             <span className="text-xs text-gray-600 ml-2 font-mono">snapshot: {curatedSnapshotId.slice(0, 8)}</span>
+          )}
+          {view === 'curated' && pendingSnapshotId && pendingSnapshotId !== curatedSnapshotId && (
+            <button
+              onClick={refetchCurated}
+              className="ml-3 px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-600/20 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-600/30 transition-colors flex items-center gap-1.5"
+              title={`New snapshot: ${pendingSnapshotId.slice(0, 8)}`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              New curated set — refresh
+            </button>
           )}
         </div>
 
