@@ -161,13 +161,50 @@ DEMO_CLUSTERS = [
 ]
 
 
-def seed_database(database_url: str | None = None):
-    """Seed the database with demo signal clusters."""
+def seed_database(database_url: str | None = None, *, force: bool = False):
+    """Seed the database with demo signal clusters.
+
+    Session 1131 Phase 1 (Rigby's lock): NO-OP when real upstream
+    clusters exist (rows with `external_cluster_id IS NOT NULL`).
+    Demo seeds are now strictly a cold-start fallback for dev /
+    no-fleet-network environments. Pass `force=True` to override
+    (useful for tests / explicit reseeding via the CLI entrypoint).
+    """
     if database_url is None:
         database_url = _resolve_database_url()
     engine = init_db(database_url)
+
+    # Session 1131 Phase 1: ensure the `external_cluster_id` column
+    # exists before any query that references it. The Dockerfile runs
+    # `seed_database()` BEFORE uvicorn loads main.py — so main.py's
+    # _ensure_schema() call hasn't fired yet when we get here.
+    # Importing inside the function keeps the seed.py module import
+    # cheap (avoids pulling httpx / brain_events at module load time).
+    from app.signal_ingest import _ensure_schema
+    _ensure_schema(engine)
+
     SessionLocal = sessionmaker(bind=engine)
     session = SessionLocal()
+
+    if not force:
+        # Real-cluster guard. We check `external_cluster_id IS NOT NULL`
+        # rather than total count because a seed run may have already
+        # populated demo rows; those should be wiped/refreshed when no
+        # real data exists. The presence of *any* upstream-sourced row
+        # means we trust the live ingest path.
+        real_count = (
+            session.query(SignalCluster)
+            .filter(SignalCluster.external_cluster_id.isnot(None))
+            .count()
+        )
+        if real_count > 0:
+            print(
+                f"Seed skipped: {real_count} real upstream cluster(s) "
+                "already present (external_cluster_id set). Pass "
+                "force=True to override."
+            )
+            session.close()
+            return
 
     # Clear existing data
     session.query(ActionCard).delete()
