@@ -768,12 +768,15 @@ def _apply_curated_actions(session_factory: sessionmaker, payload: dict) -> None
             if cluster is None:
                 # cluster_promoted hasn't been ingested yet. Skip; a
                 # future actions emit (or backfill) will pick it up.
+                # Log includes snapshot_id so replay/troubleshooting can
+                # correlate to the u-d-b snapshot that produced the
+                # orphan (Rigby PR-review suggestion on #18).
                 missing_cluster += 1
                 logger.info(
                     "[signal-ingest] curated_actions: cluster %s not "
-                    "found locally — skipping action %s (cluster_promoted "
-                    "event likely arrives later)",
-                    ext_cluster_id, ext_action_id,
+                    "found locally — skipping action %s in snapshot %s "
+                    "(cluster_promoted event likely arrives later)",
+                    ext_cluster_id, ext_action_id, snapshot_id,
                 )
                 continue
 
