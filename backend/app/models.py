@@ -41,6 +41,30 @@ class SignalCluster(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+    # Session 1138 quality fix — LLM-summarized fields. The original
+    # title/summary/tags come from u-d-b's clustering, which currently
+    # produces meta-stat summaries ("69 signals from 17 sources") and
+    # poor titles. This service runs over the evidence cards underneath
+    # and produces insight-grade titles + a single-sentence blurb +
+    # clean entity tags. `summary_quality` is the state machine:
+    #
+    #   - raw         : not yet summarized (default)
+    #   - summarized  : LLM extracted a coherent theme + title + blurb
+    #   - rejected    : LLM determined the cluster is too incoherent
+    #                   to summarize (heterogeneous evidence). Hidden
+    #                   from /api/signals by default.
+    #
+    # `summarized_content_hash` is the SHA-256 of the inputs we sent
+    # to the LLM (evidence claim_texts + source domains). Idempotency:
+    # if a re-run produces the same hash, skip. Lets the backfill
+    # script run safely on a cron without re-spending tokens.
+    summary_quality = Column(String(16), default="raw", index=True)
+    summarized_title = Column(Text, nullable=True)
+    summarized_blurb = Column(Text, nullable=True)
+    clean_tags = Column(JSON, nullable=True)
+    summarized_at = Column(DateTime, nullable=True)
+    summarized_content_hash = Column(String(64), nullable=True)
+
     # Relationships
     evidence_cards = relationship("EvidenceCard", back_populates="cluster", cascade="all, delete-orphan")
     source_items = relationship("SourceItem", back_populates="cluster", cascade="all, delete-orphan")

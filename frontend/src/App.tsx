@@ -38,6 +38,7 @@ interface ActionCardData {
 
 interface Stats {
   total_signals: number; active_signals: number
+  raw_pending?: number; rejected?: number
   categories: Record<string, number>; avg_confidence: number
   evidence_cards_total: number; action_cards_total: number
 }
@@ -314,7 +315,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-950 p-6">
       <div className="max-w-6xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-2">
               <Activity className="text-blue-400" size={24} />
@@ -325,11 +326,56 @@ export default function App() {
           </div>
           {stats && (
             <div className="flex items-center gap-4 text-xs text-gray-500">
-              <span className="flex items-center gap-1"><Activity size={12} className="text-green-400" /> {stats.active_signals} active</span>
+              <span className="flex items-center gap-1"><Activity size={12} className="text-green-400" /> {stats.active_signals} insight-grade</span>
               <span className="flex items-center gap-1"><Star size={12} className="text-blue-400" /> {stats.evidence_cards_total} evidence</span>
               <span className="flex items-center gap-1"><BarChart3 size={12} className="text-purple-400" /> {Math.round(stats.avg_confidence * 100)}% confidence</span>
             </div>
           )}
+        </div>
+
+        {/* Hero / value-prop block — explains what this is to a first-time visitor. */}
+        <div className="mb-8 p-6 rounded-2xl bg-gradient-to-br from-blue-950/40 via-gray-900 to-purple-950/30 border border-blue-900/40">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="md:col-span-2 space-y-3">
+              <h2 className="text-xl font-semibold text-white">
+                What's actually happening across tech, finance, and the job market — in one place.
+              </h2>
+              <p className="text-sm text-gray-400 leading-relaxed">
+                SignalStudio reads {stats?.evidence_cards_total ?? '600+'} headlines and articles a day across a fleet of feeds,
+                clusters them by topic, and turns each cluster into one sentence you can act on.
+                We hide noise; only insight-grade signals show below.
+              </p>
+              <div className="flex items-center gap-3 text-xs text-gray-500 pt-1">
+                <span className="px-2 py-0.5 rounded bg-gray-800/60 border border-gray-700/50">demand spikes</span>
+                <span className="px-2 py-0.5 rounded bg-gray-800/60 border border-gray-700/50">emerging trends</span>
+                <span className="px-2 py-0.5 rounded bg-gray-800/60 border border-gray-700/50">opportunity windows</span>
+                <span className="px-2 py-0.5 rounded bg-gray-800/60 border border-gray-700/50">sentiment shifts</span>
+              </div>
+            </div>
+            <div className="bg-gray-950/50 rounded-xl p-4 border border-gray-800/50">
+              <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Today's pipeline</div>
+              <div className="space-y-1.5 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Headlines processed</span>
+                  <span className="text-white font-mono">{stats?.evidence_cards_total ?? '—'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Insight-grade signals</span>
+                  <span className="text-emerald-400 font-mono">{stats?.active_signals ?? '—'}</span>
+                </div>
+                {typeof stats?.rejected === 'number' && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Filtered as noise</span>
+                    <span className="text-gray-600 font-mono">{stats.rejected}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between pt-1.5 mt-1.5 border-t border-gray-800/50">
+                  <span className="text-gray-400">Categories tracked</span>
+                  <span className="text-white font-mono">{stats?.categories ? Object.keys(stats.categories).length : '—'}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Session 1131 Phase 2 — view toggle between All Signals + Curated Top 10 */}
@@ -402,7 +448,13 @@ export default function App() {
             </div>
           )
         ) : signals.length === 0 ? (
-          <div className="text-center p-12 text-gray-600">No signals found. Run the seed script to populate demo data.</div>
+          <div className="text-center p-12 text-gray-600">
+            <div className="mb-2">No insight-grade signals in this category yet.</div>
+            <div className="text-xs text-gray-700">
+              Backend pipeline is running. As new headlines cluster into coherent themes,
+              they'll appear here. Try "All Signals" or come back tomorrow.
+            </div>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {signals.map(signal => (

@@ -236,13 +236,34 @@ def list_signals(
     category: Optional[str] = None,
     limit: int = Query(default=20, le=50),
     offset: int = 0,
+    include_raw: bool = Query(
+        default=False,
+        description=(
+            "By default the response hides clusters that haven't been "
+            "LLM-summarized yet OR were rejected as incoherent. Set "
+            "include_raw=true to see everything regardless of quality."
+        ),
+    ),
 ):
-    """List signal clusters, optionally filtered by category."""
+    """List signal clusters, optionally filtered by category.
+
+    Default response only includes `summary_quality='summarized'` rows
+    so a visitor sees insight-grade content. Rejected (incoherent)
+    clusters and not-yet-summarized raw clusters are hidden by default.
+    Pass `include_raw=true` to see everything for debugging.
+
+    When a row has summarized_title/blurb populated, those are
+    surfaced as `title` + `summary` on the wire — the underlying
+    raw meta-stat title is hidden because that's the whole point of
+    this filter. Clients shouldn't need to know the difference.
+    """
     db = SessionLocal()
     try:
         q = db.query(SignalCluster).order_by(desc(SignalCluster.signal_strength))
         if category and category != "all":
             q = q.filter(SignalCluster.category == category)
+        if not include_raw:
+            q = q.filter(SignalCluster.summary_quality == "summarized")
         total = q.count()
         clusters = q.offset(offset).limit(limit).all()
 
@@ -250,14 +271,15 @@ def list_signals(
             "signals": [
                 {
                     "id": str(c.id),
-                    "title": c.title,
-                    "summary": c.summary[:200],
+                    "title": c.summarized_title or c.title,
+                    "summary": (c.summarized_blurb or c.summary or "")[:300],
                     "category": c.category,
                     "confidence_score": c.confidence_score,
                     "source_count": c.source_count,
                     "signal_strength": c.signal_strength,
                     "status": c.status,
-                    "tags": c.tags or [],
+                    "tags": (c.clean_tags if c.clean_tags else c.tags) or [],
+                    "summary_quality": c.summary_quality or "raw",
                     "created_at": c.created_at.isoformat() if c.created_at else None,
                     "evidence_count": len(c.evidence_cards),
                     "has_action": len(c.action_cards) > 0,
@@ -330,6 +352,10 @@ def list_curated_signals(limit: int = Query(default=10, le=50)):
         rows = (
             db.query(SignalCluster)
             .filter(SignalCluster.curated_rank.isnot(None))
+            # Hide curated rows that came back rejected — those wouldn't
+            # have been curated by SignalCuratorAgent if upstream knew,
+            # but we filter defensively at the read-side too.
+            .filter(SignalCluster.summary_quality != "rejected")
             .order_by(SignalCluster.curated_rank.asc())
             .limit(limit)
             .all()
@@ -348,13 +374,14 @@ def list_curated_signals(limit: int = Query(default=10, le=50)):
                     "external_cluster_id": c.external_cluster_id,
                     "rank": c.curated_rank,
                     "curated_score": c.curated_score,
-                    "title": c.title,
-                    "summary": c.summary[:200] if c.summary else "",
+                    "title": c.summarized_title or c.title,
+                    "summary": ((c.summarized_blurb or c.summary or "")[:300]),
                     "category": c.category,
                     "confidence_score": c.confidence_score,
                     "signal_strength": c.signal_strength,
                     "source_count": c.source_count,
-                    "tags": c.tags or [],
+                    "tags": (c.clean_tags if c.clean_tags else c.tags) or [],
+                    "summary_quality": c.summary_quality or "raw",
                     "created_at": c.created_at.isoformat() if c.created_at else None,
                     "evidence_count": len(c.evidence_cards),
                 }
@@ -388,14 +415,15 @@ def get_signal(signal_id: UUID):
         return {
             "signal": {
                 "id": str(cluster.id),
-                "title": cluster.title,
-                "summary": cluster.summary,
+                "title": cluster.summarized_title or cluster.title,
+                "summary": cluster.summarized_blurb or cluster.summary or "",
                 "category": cluster.category,
                 "confidence_score": cluster.confidence_score,
                 "source_count": cluster.source_count,
                 "signal_strength": cluster.signal_strength,
                 "status": cluster.status,
-                "tags": cluster.tags or [],
+                "tags": (cluster.clean_tags if cluster.clean_tags else cluster.tags) or [],
+                "summary_quality": cluster.summary_quality or "raw",
                 "created_at": cluster.created_at.isoformat() if cluster.created_at else None,
             },
             "evidence_cards": [
@@ -442,22 +470,63 @@ def get_signal(signal_id: UUID):
 
 @app.get("/api/stats")
 def get_stats():
-    """Dashboard stats."""
+    """Dashboard stats.
+
+    Counts surface BOTH "shown to users" (summarized only) AND total
+    pipeline state. Public stats badges in the frontend show
+    `active_signals` which now means insight-grade only — the
+    `raw_pending` + `rejected` counts are exposed for ops visibility.
+    """
     db = SessionLocal()
     try:
+        # Show-to-user count: summarized + active only.
+        active = (
+            db.query(SignalCluster)
+            .filter(
+                SignalCluster.status == "active",
+                SignalCluster.summary_quality == "summarized",
+            )
+            .count()
+        )
         total = db.query(SignalCluster).count()
-        active = db.query(SignalCluster).filter(SignalCluster.status == "active").count()
-        categories = {}
-        for c in db.query(SignalCluster).all():
+        raw_pending = (
+            db.query(SignalCluster)
+            .filter(SignalCluster.summary_quality == "raw")
+            .count()
+        )
+        rejected = (
+            db.query(SignalCluster)
+            .filter(SignalCluster.summary_quality == "rejected")
+            .count()
+        )
+
+        # Category counts from the *summarized* set only — that's what
+        # the user actually sees, so showing a "Crypto: 12" badge that
+        # the user can't click into is misleading.
+        categories: dict[str, int] = {}
+        for c in (
+            db.query(SignalCluster)
+            .filter(SignalCluster.summary_quality == "summarized")
+            .all()
+        ):
             categories[c.category] = categories.get(c.category, 0) + 1
-        avg_confidence = 0
-        if total > 0:
-            scores = [c.confidence_score for c in db.query(SignalCluster).all()]
-            avg_confidence = sum(scores) / len(scores)
+
+        avg_confidence = 0.0
+        if active > 0:
+            scores = [
+                c.confidence_score for c in (
+                    db.query(SignalCluster)
+                    .filter(SignalCluster.summary_quality == "summarized")
+                    .all()
+                )
+            ]
+            avg_confidence = sum(scores) / len(scores) if scores else 0.0
 
         return {
             "total_signals": total,
             "active_signals": active,
+            "raw_pending": raw_pending,
+            "rejected": rejected,
             "categories": categories,
             "avg_confidence": round(avg_confidence, 2),
             "evidence_cards_total": db.query(EvidenceCard).count(),
