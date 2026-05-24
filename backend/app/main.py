@@ -244,19 +244,33 @@ def list_signals(
             "include_raw=true to see everything regardless of quality."
         ),
     ),
+    skip_dedup: bool = Query(
+        default=False,
+        description=(
+            "By default the response collapses near-duplicate clusters "
+            "(same theme summarized from different upstream clusters — "
+            "see app.signal_deduper). Set skip_dedup=true to see the "
+            "pre-dedup list."
+        ),
+    ),
 ):
     """List signal clusters, optionally filtered by category.
 
     Default response only includes `summary_quality='summarized'` rows
     so a visitor sees insight-grade content. Rejected (incoherent)
     clusters and not-yet-summarized raw clusters are hidden by default.
-    Pass `include_raw=true` to see everything for debugging.
+    A deterministic deduper then collapses near-duplicate clusters
+    (e.g. four "Tableau Developer" rows → 1) so visitors don't see
+    the same theme repeated. Pass `include_raw=true` to see all
+    quality states; pass `skip_dedup=true` to see the pre-dedup list.
 
     When a row has summarized_title/blurb populated, those are
     surfaced as `title` + `summary` on the wire — the underlying
     raw meta-stat title is hidden because that's the whole point of
     this filter. Clients shouldn't need to know the difference.
     """
+    from app.signal_deduper import deduplicate_clusters
+
     db = SessionLocal()
     try:
         q = db.query(SignalCluster).order_by(desc(SignalCluster.signal_strength))
@@ -264,8 +278,21 @@ def list_signals(
             q = q.filter(SignalCluster.category == category)
         if not include_raw:
             q = q.filter(SignalCluster.summary_quality == "summarized")
-        total = q.count()
-        clusters = q.offset(offset).limit(limit).all()
+
+        # Fetch a larger window so dedup has the full set to work over.
+        # Without this we'd run dedup on the slice and miss duplicates
+        # whose representative happens to fall on another page.
+        pre_dedup = q.all()
+        if skip_dedup:
+            deduped = pre_dedup
+            duplicates_merged = 0
+        else:
+            dedup = deduplicate_clusters(pre_dedup)
+            deduped = dedup.kept
+            duplicates_merged = dedup.duplicates_merged
+
+        total = len(deduped)
+        clusters = deduped[offset:offset + limit]
 
         return {
             "signals": [
@@ -287,6 +314,7 @@ def list_signals(
                 for c in clusters
             ],
             "total": total,
+            "duplicates_merged": duplicates_merged,
             "offset": offset,
             "limit": limit,
         }
@@ -349,7 +377,11 @@ def list_curated_signals(limit: int = Query(default=10, le=50)):
     """
     db = SessionLocal()
     try:
-        rows = (
+        # Pull MORE than `limit` so the deduper sees enough breadth.
+        # Without this we'd dedup a tiny window and still surface
+        # duplicates that fall just outside it.
+        from app.signal_deduper import deduplicate_clusters
+        pre_dedup = (
             db.query(SignalCluster)
             .filter(SignalCluster.curated_rank.isnot(None))
             # Hide curated rows that came back rejected — those wouldn't
@@ -357,9 +389,10 @@ def list_curated_signals(limit: int = Query(default=10, le=50)):
             # but we filter defensively at the read-side too.
             .filter(SignalCluster.summary_quality != "rejected")
             .order_by(SignalCluster.curated_rank.asc())
-            .limit(limit)
             .all()
         )
+        deduped = deduplicate_clusters(pre_dedup).kept
+        rows = deduped[:limit]
         if not rows:
             return {
                 "curated": [],
@@ -477,17 +510,22 @@ def get_stats():
     `active_signals` which now means insight-grade only — the
     `raw_pending` + `rejected` counts are exposed for ops visibility.
     """
+    from app.signal_deduper import deduplicate_clusters
     db = SessionLocal()
     try:
-        # Show-to-user count: summarized + active only.
-        active = (
+        summarized_rows = (
             db.query(SignalCluster)
             .filter(
                 SignalCluster.status == "active",
                 SignalCluster.summary_quality == "summarized",
             )
-            .count()
+            .all()
         )
+        # Show-to-user count: summarized + active, after dedup.
+        dedup = deduplicate_clusters(summarized_rows)
+        active = len(dedup.kept)
+        duplicates_merged = dedup.duplicates_merged
+
         total = db.query(SignalCluster).count()
         raw_pending = (
             db.query(SignalCluster)
@@ -500,26 +538,16 @@ def get_stats():
             .count()
         )
 
-        # Category counts from the *summarized* set only — that's what
-        # the user actually sees, so showing a "Crypto: 12" badge that
-        # the user can't click into is misleading.
+        # Category counts on the DEDUPED set — that's what the user
+        # actually sees, so showing a "Tech: 12" badge that collapses
+        # to 3 after dedup would be misleading.
         categories: dict[str, int] = {}
-        for c in (
-            db.query(SignalCluster)
-            .filter(SignalCluster.summary_quality == "summarized")
-            .all()
-        ):
+        for c in dedup.kept:
             categories[c.category] = categories.get(c.category, 0) + 1
 
         avg_confidence = 0.0
         if active > 0:
-            scores = [
-                c.confidence_score for c in (
-                    db.query(SignalCluster)
-                    .filter(SignalCluster.summary_quality == "summarized")
-                    .all()
-                )
-            ]
+            scores = [c.confidence_score for c in dedup.kept if c.confidence_score is not None]
             avg_confidence = sum(scores) / len(scores) if scores else 0.0
 
         return {
@@ -527,6 +555,7 @@ def get_stats():
             "active_signals": active,
             "raw_pending": raw_pending,
             "rejected": rejected,
+            "duplicates_merged": duplicates_merged,
             "categories": categories,
             "avg_confidence": round(avg_confidence, 2),
             "evidence_cards_total": db.query(EvidenceCard).count(),
