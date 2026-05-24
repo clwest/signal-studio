@@ -91,6 +91,23 @@ async def _start_fleet_signal_ingest():
     logger.info("[startup] fleet signal ingest tasks spawned")
 
 
+@app.on_event("startup")
+def _start_auto_summarizer():
+    """Spin up the auto-summarize worker on a daemon thread.
+
+    Polls every SUMMARIZER_INTERVAL_SECONDS (default 60) for any new
+    raw clusters arriving from the ingest path, summarizes up to
+    SUMMARIZER_BATCH_SIZE per tick. Idempotent — won't reprocess
+    already-summarized rows. Daemon thread so it dies with the process.
+
+    Disable with SUMMARIZER_ENABLED=0 if you want to backfill manually
+    via the CLI instead. Worker also self-disables silently when
+    OPENAI_API_KEY is missing or placeholder.
+    """
+    from app.signal_summarizer import start_auto_summarize_thread
+    start_auto_summarize_thread(SessionLocal)
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -102,6 +119,18 @@ def get_db():
 @app.get("/api/health")
 def health():
     return {"status": "healthy", "service": "SignalStudio", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/summarizer-status")
+def summarizer_status():
+    """Auto-summarize worker state — for ops visibility.
+
+    Surfaces what the background worker has done since process start:
+    ticks elapsed, total summarized/rejected/error counts, cumulative
+    cost in USD, last-tick stats, and any most-recent error.
+    """
+    from app.signal_summarizer import get_summarizer_state
+    return get_summarizer_state()
 
 
 # ── Brain bridge — proxy questions to u-d-b's PA (Rigby) ───────────────────

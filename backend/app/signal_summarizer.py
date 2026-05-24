@@ -37,7 +37,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from openai import OpenAI
 from sqlalchemy.orm import Session
@@ -422,6 +422,190 @@ def summarize_pending(
 # ──────────────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────────────
+# Auto-summarize background worker (Session 1138 round 3)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Backfill via the CLI made the existing 131 clusters insight-grade,
+# but new clusters arriving from u-d-b's spider feed land as
+# summary_quality='raw' and would never surface in the UI unless
+# someone re-ran the CLI. This worker polls the DB and runs the
+# summarizer on raw rows automatically.
+#
+# Design: simple polling worker on a daemon thread.
+#   - Wake every SUMMARIZER_INTERVAL_SECONDS (default 60).
+#   - Check for raw clusters; if any, summarize up to SUMMARIZER_BATCH_SIZE.
+#   - Built-in idempotency on summarize_pending makes re-runs safe.
+#   - Errors logged but never propagate — never crash the worker thread.
+#   - Daemon thread so it dies with the process; no graceful-shutdown
+#     ceremony needed for what is, in effect, a cron tick.
+#
+# Why not asyncio? The summarizer uses sync SQLAlchemy + the OpenAI
+# sync client. A thread is the path of least resistance and matches
+# what FastAPI's BackgroundTasks would do under the hood. Keeps the
+# code readable for the next person.
+
+
+import threading
+import time as _time_module
+from typing import Callable
+
+
+_summarizer_shutdown = threading.Event()
+_summarizer_state: dict[str, Any] = {
+    "enabled": False,
+    "running": False,
+    "started_at": None,
+    "ticks": 0,
+    "last_tick_at": None,
+    "last_tick_summarized": 0,
+    "last_tick_rejected": 0,
+    "last_tick_errors": 0,
+    "total_summarized": 0,
+    "total_rejected": 0,
+    "total_errors": 0,
+    "total_cost_usd": 0.0,
+    "last_error": None,
+}
+
+
+def get_summarizer_state() -> dict:
+    """Return a snapshot of the auto-summarize worker's state."""
+    return dict(_summarizer_state)
+
+
+def _auto_summarize_tick(session_factory: Callable, batch_size: int) -> None:
+    """One iteration of the loop. Counts updated in-place on the state dict."""
+    from app.models import SignalCluster
+
+    session = session_factory()
+    try:
+        # Cheap pre-check — skip the LLM client construction when there's
+        # nothing to do.
+        pending = (
+            session.query(SignalCluster)
+            .filter(SignalCluster.summary_quality == "raw")
+            .count()
+        )
+        if pending == 0:
+            return
+
+        result = summarize_pending(session, limit=batch_size)
+        _summarizer_state["last_tick_summarized"] = result.summarized
+        _summarizer_state["last_tick_rejected"] = result.rejected
+        _summarizer_state["last_tick_errors"] = result.errors
+        _summarizer_state["total_summarized"] += result.summarized
+        _summarizer_state["total_rejected"] += result.rejected
+        _summarizer_state["total_errors"] += result.errors
+        _summarizer_state["total_cost_usd"] += result.estimated_cost_usd
+        if result.summarized or result.rejected:
+            logger.info(
+                "[auto-summarize] tick: %d ok, %d rejected, %d err, $%.4f "
+                "(pending was %d, batch_size %d)",
+                result.summarized, result.rejected, result.errors,
+                result.estimated_cost_usd, pending, batch_size,
+            )
+    finally:
+        session.close()
+
+
+def auto_summarize_loop(
+    session_factory: Callable,
+    *,
+    interval_seconds: float = 60.0,
+    batch_size: int = 5,
+) -> None:
+    """Polling worker — run as a daemon thread.
+
+    Sleeps interval_seconds between ticks; on each tick runs
+    summarize_pending(limit=batch_size). Idempotency in
+    summarize_pending makes repeated calls safe.
+
+    Exits when _summarizer_shutdown is set. Errors during a tick are
+    caught + logged + recorded in state; the loop never crashes.
+    """
+    key_err = _check_api_key()
+    if key_err:
+        logger.warning(
+            "[auto-summarize] not starting: %s. Set OPENAI_API_KEY and "
+            "restart to enable.", key_err,
+        )
+        return
+
+    _summarizer_state["enabled"] = True
+    _summarizer_state["running"] = True
+    _summarizer_state["started_at"] = datetime.utcnow().isoformat()
+    logger.info(
+        "[auto-summarize] worker started — interval=%ss batch=%d model=%s",
+        interval_seconds, batch_size, DEFAULT_MODEL,
+    )
+
+    try:
+        while not _summarizer_shutdown.is_set():
+            _summarizer_state["ticks"] += 1
+            _summarizer_state["last_tick_at"] = datetime.utcnow().isoformat()
+            try:
+                _auto_summarize_tick(session_factory, batch_size)
+                _summarizer_state["last_error"] = None
+            except Exception as e:  # pragma: no cover — defensive
+                _summarizer_state["last_error"] = repr(e)[:500]
+                logger.exception("[auto-summarize] tick failed: %s", e)
+            # Use the shutdown event's wait() instead of time.sleep so
+            # shutdown is responsive even mid-interval.
+            _summarizer_shutdown.wait(timeout=interval_seconds)
+    finally:
+        _summarizer_state["running"] = False
+        logger.info("[auto-summarize] worker stopped")
+
+
+def start_auto_summarize_thread(
+    session_factory: Callable,
+    *,
+    interval_seconds: Optional[float] = None,
+    batch_size: Optional[int] = None,
+    enabled: Optional[bool] = None,
+) -> Optional[threading.Thread]:
+    """Spin up the worker on a daemon thread. Returns the thread (or None
+    if disabled / no API key).
+
+    Env vars (sane defaults):
+        SUMMARIZER_ENABLED=1     — 0 disables the worker entirely
+        SUMMARIZER_INTERVAL_SECONDS=60
+        SUMMARIZER_BATCH_SIZE=5
+    """
+    if enabled is None:
+        enabled = os.environ.get("SUMMARIZER_ENABLED", "1") not in ("0", "false", "False", "")
+    if not enabled:
+        logger.info("[auto-summarize] disabled via SUMMARIZER_ENABLED")
+        return None
+
+    if interval_seconds is None:
+        try:
+            interval_seconds = float(os.environ.get("SUMMARIZER_INTERVAL_SECONDS", "60"))
+        except ValueError:
+            interval_seconds = 60.0
+    if batch_size is None:
+        try:
+            batch_size = int(os.environ.get("SUMMARIZER_BATCH_SIZE", "5"))
+        except ValueError:
+            batch_size = 5
+
+    thread = threading.Thread(
+        target=auto_summarize_loop,
+        args=(session_factory,),
+        kwargs={"interval_seconds": interval_seconds, "batch_size": batch_size},
+        name="auto-summarize",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def stop_auto_summarize_thread() -> None:
+    """Signal the worker to stop. Used by tests + graceful-shutdown hooks."""
+    _summarizer_shutdown.set()
+
+
 def _check_api_key() -> Optional[str]:
     """Return None when OPENAI_API_KEY is configured; error string otherwise."""
     key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -445,4 +629,8 @@ __all__ = [
     "summarize_pending",
     "apply_summary_to_cluster",
     "should_skip",
+    "auto_summarize_loop",
+    "start_auto_summarize_thread",
+    "stop_auto_summarize_thread",
+    "get_summarizer_state",
 ]
