@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -137,6 +137,98 @@ def brain_ask(req: BrainAskRequest):
     if not result.get("ok"):
         raise HTTPException(502, result.get("error", "brain unreachable"))
     return result
+
+
+# ── Paid-interest (Session 1138 — Decision 13 demand-gate) ─────────────────
+# Free-tier users submit interest in a paid version. Per-IP rate-limit
+# 3/hour + email dedup before forwarding to u-d-b (which also dedups
+# server-side as the safety net). All rows live in u-d-b's
+# core_fleetpaidinterest table; queryable by Jessica via Rigby's
+# paid_interest_status PA tool.
+
+class PaidInterestRequest(BaseModel):
+    email: str
+    use_case: str
+    willing_pay: Optional[int] = None
+    workspace_size: Optional[str] = None
+    user_id_claim: Optional[str] = None
+
+
+# Simple in-memory rate-limit. Keyed by client IP. Stores
+# list[float-epoch-seconds] of recent submissions. Hour window. Single
+# process per container — no Redis needed for this scope.
+_RATE_LIMIT_WINDOW_SEC = 3600
+_RATE_LIMIT_MAX = 3
+_rate_limit_state: dict[str, list[float]] = {}
+
+
+def _check_rate_limit(client_ip: str) -> bool:
+    """Return True when the request is allowed, False when over limit."""
+    import time as _time
+    now = _time.monotonic()
+    cutoff = now - _RATE_LIMIT_WINDOW_SEC
+    recent = [t for t in _rate_limit_state.get(client_ip, []) if t >= cutoff]
+    if len(recent) >= _RATE_LIMIT_MAX:
+        _rate_limit_state[client_ip] = recent
+        return False
+    recent.append(now)
+    _rate_limit_state[client_ip] = recent
+    return True
+
+
+@app.post("/api/paid-interest")
+def submit_paid_interest_view(req: PaidInterestRequest, request: Request):
+    from app.brain_client import submit_paid_interest
+
+    # ── Validation ────────────────────────────────────────────────────
+    email = req.email.strip().lower()
+    use_case = req.use_case.strip()
+    if not email:
+        raise HTTPException(400, "email is required")
+    if not use_case:
+        raise HTTPException(400, "use_case is required")
+    if len(use_case) > 140:
+        raise HTTPException(400, "use_case must be ≤140 characters")
+    if req.willing_pay is not None and req.willing_pay < 0:
+        raise HTTPException(400, "willing_pay must be >= 0")
+    if req.workspace_size and req.workspace_size not in {"solo", "2-5", "6-20", "20+"}:
+        raise HTTPException(400, "workspace_size must be one of solo/2-5/6-20/20+")
+
+    # ── Rate-limit (per IP, in-memory) ────────────────────────────────
+    client_ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(
+            429,
+            f"rate-limited — max {_RATE_LIMIT_MAX} submissions per hour per IP",
+        )
+
+    # ── Forward to u-d-b ──────────────────────────────────────────────
+    result = submit_paid_interest(
+        email=email,
+        use_case=use_case,
+        willing_pay=req.willing_pay,
+        workspace_size=req.workspace_size,
+        user_id_claim=req.user_id_claim,
+    )
+    if not result.get("ok"):
+        status_code = result.get("status_code") or 502
+        raise HTTPException(
+            status_code if status_code >= 400 else 502,
+            result.get("error", "paid-interest submission failed"),
+        )
+    return {
+        "ok": True,
+        "id": result.get("id"),
+        "deduped": result.get("deduped", False),
+        "message": (
+            "Got it. We'll email you at launch."
+            if not result.get("deduped")
+            else "Already captured — you'll hear from us at launch."
+        ),
+    }
 
 
 @app.get("/api/signals")
