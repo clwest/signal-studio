@@ -65,6 +65,14 @@ class SignalCluster(Base):
     summarized_at = Column(DateTime, nullable=True)
     summarized_content_hash = Column(String(64), nullable=True)
 
+    # Session 1140 — which u-d-b clusterer produced the upstream row.
+    # Mirrors `core.models_signal_intelligence.SignalCluster.cluster_method`
+    # so we can break the LLM judge's reject rate down per method (the
+    # SLO for the entity-token rewrite shipped in Session 1139). Default
+    # 'legacy' for rows ingested before this column existed; upstream
+    # default is 'entity_token_v1'. Width (32) matches u-d-b.
+    cluster_method = Column(String(32), default="legacy", index=True)
+
     # Relationships
     evidence_cards = relationship("EvidenceCard", back_populates="cluster", cascade="all, delete-orphan")
     source_items = relationship("SourceItem", back_populates="cluster", cascade="all, delete-orphan")

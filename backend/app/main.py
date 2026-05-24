@@ -594,6 +594,105 @@ def get_stats():
         db.close()
 
 
+@app.get("/api/judge-stats")
+def get_judge_stats(days: int = Query(default=7, ge=1, le=90)):
+    """Session 1140 — LLM judge rejection-rate stats.
+
+    Surfaces the auto-summarize judge's accept/reject breakdown so the
+    Session 1139 entity-token clusterer can be measured against the
+    legacy verb-keyword fallback. Power-source for the
+    `signal_studio_judge_stats` PA tool in u-d-b (Rigby calls this so
+    Chris can query rejection rate from chat without `docker exec`).
+
+    Acceptance bar (Rigby-locked, Session 1139):
+      - cluster_method='entity_token_v1' rejection_rate < 30% → victory
+      - 30-60% → partial; decide on embedding approach
+      - ≥ 60% → escalate
+
+    Returns counts + rejection_rate at three levels:
+      1. total — all clusters in the window
+      2. by_cluster_method — entity_token_v1 vs legacy (the SLO)
+      3. by_pattern_type — demand_spike, trend_emergence, etc.
+         (pattern_type lives in `extra_data['pattern_type']` because
+         it's never been a first-class column in this mirror)
+
+    rejection_rate is `rejected / (rejected + summarized)` — raw rows
+    (not yet judged) are excluded from the denominator, otherwise a
+    backlog spike would mask quality.
+    """
+    from datetime import timedelta
+    since = datetime.utcnow() - timedelta(days=days)
+
+    def _empty_bucket() -> dict:
+        return {
+            "total": 0,
+            "summarized": 0,
+            "rejected": 0,
+            "raw": 0,
+            "rejection_rate": 0.0,
+        }
+
+    def _finalize(bucket: dict) -> dict:
+        judged = bucket["summarized"] + bucket["rejected"]
+        bucket["rejection_rate"] = (
+            round(bucket["rejected"] / judged, 4) if judged else 0.0
+        )
+        return bucket
+
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(
+                SignalCluster.summary_quality,
+                SignalCluster.cluster_method,
+                SignalCluster.extra_data,
+            )
+            .filter(SignalCluster.created_at >= since)
+            .all()
+        )
+
+        totals = _empty_bucket()
+        by_cluster_method: dict[str, dict] = {}
+        by_pattern_type: dict[str, dict] = {}
+
+        for quality, method, extra in rows:
+            quality = (quality or "raw").lower()
+            method = (method or "legacy").lower()
+            pattern_type = "unknown"
+            if isinstance(extra, dict):
+                pt = extra.get("pattern_type")
+                if isinstance(pt, str) and pt:
+                    pattern_type = pt
+
+            cm_bucket = by_cluster_method.setdefault(method, _empty_bucket())
+            pt_bucket = by_pattern_type.setdefault(pattern_type, _empty_bucket())
+
+            for bucket in (totals, cm_bucket, pt_bucket):
+                bucket["total"] += 1
+                if quality == "summarized":
+                    bucket["summarized"] += 1
+                elif quality == "rejected":
+                    bucket["rejected"] += 1
+                elif quality == "raw":
+                    bucket["raw"] += 1
+
+        _finalize(totals)
+        for b in by_cluster_method.values():
+            _finalize(b)
+        for b in by_pattern_type.values():
+            _finalize(b)
+
+        return {
+            "days": days,
+            "since": since.isoformat(),
+            **totals,
+            "by_cluster_method": by_cluster_method,
+            "by_pattern_type": by_pattern_type,
+        }
+    finally:
+        db.close()
+
+
 @app.post("/api/signals/{signal_id}/generate-action")
 def generate_action(signal_id: UUID):
     """Generate action steps for a signal using AI."""

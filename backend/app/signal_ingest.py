@@ -176,6 +176,26 @@ def _ensure_schema(engine) -> None:
             "ON signal_clusters(summary_quality)"
         )
 
+        # Session 1140 — mirror u-d-b's cluster_method discriminator so we
+        # can compute summary_quality vs cluster_method cross-tabs (the
+        # acceptance test for the Session 1139 entity-token clusterer).
+        # Existing rows pre-date the upstream change so they were emitted
+        # without `cluster_method`; we default them to 'legacy' to match
+        # u-d-b's migration 0351 backfill. Width (32) matches upstream
+        # CharField max_length.
+        if "cluster_method" not in existing_cols:
+            logger.info(
+                "[signal-ingest] adding signal_clusters.cluster_method column"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters "
+                "ADD COLUMN cluster_method VARCHAR(32) DEFAULT 'legacy'"
+            )
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_signal_clusters_cluster_method "
+            "ON signal_clusters(cluster_method)"
+        )
+
 
 # ─── Envelope upsert ──────────────────────────────────────────────────
 
@@ -226,6 +246,11 @@ def upsert_cluster_from_envelope(session: Session, envelope: dict) -> SignalClus
     cluster_size = int(envelope.get("cluster_size") or 0)
     tags = envelope.get("tags") or []
     created_at = _parse_envelope_created_at(envelope.get("created_at"))
+    # Session 1140 — accept upstream cluster discriminator. u-d-b's
+    # fleet_signals builder defaults missing values to 'legacy' so we
+    # mirror that here; the DB column also has DEFAULT 'legacy' so this
+    # is belt-and-suspenders for envelope-builders that omit the key.
+    cluster_method = envelope.get("cluster_method") or "legacy"
 
     is_new = row is None
     if is_new:
@@ -240,6 +265,7 @@ def upsert_cluster_from_envelope(session: Session, envelope: dict) -> SignalClus
             tags=tags,
             status="active",
             created_at=created_at,
+            cluster_method=cluster_method,
             extra_data={"pattern_type": envelope.get("pattern_type")},
         )
         session.add(row)
@@ -252,6 +278,7 @@ def upsert_cluster_from_envelope(session: Session, envelope: dict) -> SignalClus
         row.source_count = cluster_size
         row.tags = tags
         row.status = "active"
+        row.cluster_method = cluster_method
         extra = dict(row.extra_data or {})
         extra["pattern_type"] = envelope.get("pattern_type")
         row.extra_data = extra
