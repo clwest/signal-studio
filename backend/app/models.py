@@ -119,16 +119,42 @@ class SourceItem(Base):
 
 
 class ActionCard(Base):
-    """Generated action steps from a signal cluster."""
+    """Generated action steps from a signal cluster.
+
+    Two write paths populate this table:
+
+      1. On-demand: `/api/signals/{id}/generate-action` creates one row
+         per cluster with hardcoded placeholder steps. Legacy path,
+         status='pending'/'in_progress'/'done'/'dismissed'.
+
+      2. Pre-generated (Session 1140 A): u-d-b's curator runs an LLM
+         action-card generator for every cluster in a curated snapshot
+         and emits `signal.curated_actions_ready`. signal-studio's fleet
+         event consumer ingests those into rows here keyed by
+         `external_id` (the u-d-b CuratedSignalEntry.id) so re-emits
+         are idempotent. status='draft'/'needs_regen'/'ready'/'dismissed'.
+
+    The two paths share the table but use different status vocabs —
+    the column is String(50) so both fit. UI should branch on
+    `external_id IS NOT NULL` (pre-generated/curated) vs IS NULL
+    (on-demand).
+    """
     __tablename__ = "action_cards"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     cluster_id = Column(UUID(as_uuid=True), ForeignKey("signal_clusters.id"), nullable=False)
+    # Session 1140 (A) — u-d-b CuratedSignalEntry.id for the pre-generated
+    # case. NULL for on-demand cards. Unique-where-not-null partial index
+    # added by _ensure_schema so idempotent re-emit by external_id works.
+    external_id = Column(String(64), index=True, nullable=True)
     title = Column(String(500), nullable=False)
     steps = Column(JSON, default=list)  # [{step: str, priority: str}]
     outreach_draft = Column(Text, default="")
     action_type = Column(String(50), default="investigate")  # investigate, invest, build, hire, pitch
-    status = Column(String(50), default="pending")  # pending, in_progress, done, dismissed
+    status = Column(String(50), default="pending")
+    # Session 1140 (A) — audit metadata for the pre-generated case.
+    # 'gpt-5-mini' or 'fallback_placeholder'. NULL for on-demand cards.
+    generated_by = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     cluster = relationship("SignalCluster", back_populates="action_cards")

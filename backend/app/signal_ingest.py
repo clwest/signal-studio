@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.brain_events import subscribe_fleet_events
 from app.fleet_signer import fleet_signature_headers
-from app.models import EvidenceCard, SignalCluster, SourceItem
+from app.models import ActionCard, EvidenceCard, SignalCluster, SourceItem
 
 
 logger = logging.getLogger(__name__)
@@ -194,6 +194,50 @@ def _ensure_schema(engine) -> None:
         conn.exec_driver_sql(
             "CREATE INDEX IF NOT EXISTS ix_signal_clusters_cluster_method "
             "ON signal_clusters(cluster_method)"
+        )
+
+        # ─── Session 1140 (A): action_cards extensions ──────────────────
+        # Idempotent ALTERs for the two new columns introduced to support
+        # u-d-b's pre-generated action cards (signal.curated_actions_ready
+        # event). Existing rows from the on-demand /generate-action path
+        # leave these columns NULL.
+        action_existing_cols = set()
+        if dialect == "sqlite":
+            rows = conn.exec_driver_sql(
+                "PRAGMA table_info(action_cards)"
+            ).fetchall()
+            action_existing_cols = {r[1] for r in rows}
+        else:
+            rows = conn.execute(text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'action_cards'"
+            )).fetchall()
+            action_existing_cols = {r[0] for r in rows}
+
+        if "external_id" not in action_existing_cols:
+            logger.info(
+                "[signal-ingest] adding action_cards.external_id column"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE action_cards "
+                "ADD COLUMN external_id VARCHAR(64)"
+            )
+        if "generated_by" not in action_existing_cols:
+            logger.info(
+                "[signal-ingest] adding action_cards.generated_by column"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE action_cards "
+                "ADD COLUMN generated_by VARCHAR(64)"
+            )
+        # Unique-where-not-null partial index on external_id so an
+        # idempotent re-emit of `signal.curated_actions_ready` doesn't
+        # duplicate rows. Works the same on Postgres + SQLite.
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "ix_action_cards_external_id_uniq "
+            "ON action_cards(external_id) "
+            "WHERE external_id IS NOT NULL"
         )
 
 
@@ -538,6 +582,10 @@ def _handle_signal_event(envelope: dict, session_factory: sessionmaker) -> None:
         _apply_curated_snapshot(session_factory, payload)
         return
 
+    if event_type == "signal.curated_actions_ready":
+        _apply_curated_actions(session_factory, payload)
+        return
+
     # Anything else under signal.* — quiet drop. Future event types
     # (cluster_decayed, etc.) plug in above by name.
     logger.debug(
@@ -642,6 +690,147 @@ def _apply_curated_snapshot(session_factory: sessionmaker, payload: dict) -> Non
         session.close()
 
 
+# ─── Session 1140 (A): curated action_cards handler ────────────────────
+
+
+def _apply_curated_actions(session_factory: sessionmaker, payload: dict) -> None:
+    """Apply a `signal.curated_actions_ready` event: persist pre-generated
+    action cards from u-d-b's curator into the local ActionCard mirror.
+
+    Session 1140 (A), Rigby's lock #2: u-d-b runs the LLM
+    action-card generator asynchronously AFTER snapshot creation, then
+    emits this event with one action_card per cluster_pick in the
+    snapshot. We mirror those into the existing ActionCard table keyed
+    by `external_id` (the u-d-b CuratedSignalEntry.id) for idempotent
+    upsert.
+
+    Payload shape (from build_curated_actions_envelope on u-d-b side):
+        {
+          "snapshot_id": "<uuid>",
+          "snapshot_created_at": "<iso>",
+          "items": [
+            {
+              "rank": 1,
+              "cluster": {<full cluster envelope, includes external_cluster_id>},
+              "action_card": {
+                "id": "<u-d-b CuratedSignalEntry.id>",
+                "action_type": "investigate"|"invest"|"build"|"hire"|"pitch",
+                "title": "...",
+                "steps": [{"step": "...", "priority": "high"|"medium"|"low"}, ...],
+                "outreach_draft": "...",
+                "status": "draft"|"needs_regen"|"ready"|"dismissed",
+                "generated_by": "gpt-5-mini"|"fallback_placeholder",
+              },
+            },
+            ...
+          ],
+          "cluster_ids": [...],
+        }
+
+    Cluster lookup: by external_cluster_id (the same field used by
+    upsert_envelope). If the cluster doesn't exist locally yet, we
+    skip the action_card and log — the cluster_promoted event will
+    arrive separately and a future actions emit will pick it up
+    (idempotent by external_id). Missing cluster is NOT a hard error.
+    """
+    snapshot_id = payload.get("snapshot_id")
+    items = payload.get("items") or []
+    if not snapshot_id or not items:
+        logger.warning(
+            "[signal-ingest] curated_actions_ready payload missing "
+            "snapshot_id or items; skipping"
+        )
+        return
+
+    session = session_factory()
+    applied = 0
+    missing_cluster = 0
+    try:
+        for item in items:
+            action_payload = item.get("action_card") or {}
+            cluster_env = item.get("cluster") or {}
+
+            ext_action_id = action_payload.get("id")
+            ext_cluster_id = cluster_env.get("external_cluster_id")
+            if not ext_action_id or not ext_cluster_id:
+                logger.info(
+                    "[signal-ingest] curated_actions item missing "
+                    "external ids — skipping (action=%r cluster=%r)",
+                    ext_action_id, ext_cluster_id,
+                )
+                continue
+
+            cluster = (
+                session.query(SignalCluster)
+                .filter(SignalCluster.external_cluster_id == ext_cluster_id)
+                .first()
+            )
+            if cluster is None:
+                # cluster_promoted hasn't been ingested yet. Skip; a
+                # future actions emit (or backfill) will pick it up.
+                # Log includes snapshot_id so replay/troubleshooting can
+                # correlate to the u-d-b snapshot that produced the
+                # orphan (Rigby PR-review suggestion on #18).
+                missing_cluster += 1
+                logger.info(
+                    "[signal-ingest] curated_actions: cluster %s not "
+                    "found locally — skipping action %s in snapshot %s "
+                    "(cluster_promoted event likely arrives later)",
+                    ext_cluster_id, ext_action_id, snapshot_id,
+                )
+                continue
+
+            existing = (
+                session.query(ActionCard)
+                .filter(ActionCard.external_id == ext_action_id)
+                .first()
+            )
+
+            title = (action_payload.get("title") or "")[:500]
+            steps = action_payload.get("steps") or []
+            outreach = action_payload.get("outreach_draft") or ""
+            action_type = action_payload.get("action_type") or "investigate"
+            status = action_payload.get("status") or "draft"
+            generated_by = action_payload.get("generated_by") or ""
+
+            if existing is None:
+                row = ActionCard(
+                    cluster_id=cluster.id,
+                    external_id=ext_action_id,
+                    title=title,
+                    steps=steps,
+                    outreach_draft=outreach,
+                    action_type=action_type,
+                    status=status,
+                    generated_by=generated_by,
+                )
+                session.add(row)
+            else:
+                existing.cluster_id = cluster.id
+                existing.title = title
+                existing.steps = steps
+                existing.outreach_draft = outreach
+                existing.action_type = action_type
+                existing.status = status
+                existing.generated_by = generated_by
+            applied += 1
+
+        session.commit()
+        logger.info(
+            "[signal-ingest] curated_actions applied snapshot=%s "
+            "applied=%d missing_cluster=%d items=%d",
+            snapshot_id, applied, missing_cluster, len(items),
+        )
+    except Exception as e:
+        session.rollback()
+        logger.exception(
+            "[signal-ingest] curated_actions apply failed snapshot=%s: %s",
+            snapshot_id, e,
+        )
+    finally:
+        session.close()
+
+
 # Ordered list of (prefix, handler) — Rigby's lock C shape. Handlers
 # fire in declaration order; first prefix to match wins. Unknown
 # prefixes silently drop to debug log (no warn spam).
@@ -703,6 +892,7 @@ async def consume_fleet_events(session_factory: sessionmaker) -> None:
 
 __all__ = [
     "HANDLERS",
+    "_apply_curated_actions",
     "_apply_curated_snapshot",
     "_ensure_schema",
     "backfill_from_pull_endpoint",
