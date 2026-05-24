@@ -406,8 +406,14 @@ def summarize_pending(
                 str(cluster.id)[:8], summary.rejection_reason[:60],
             )
 
-    if not dry_run:
-        session.commit()
+        # Per-row commit. Lets external observers (Chris in psql,
+        # /api/stats from the browser, this session's progress check)
+        # see progress live as each LLM call lands. Cost is negligible
+        # — Postgres single-row commits are microseconds versus the
+        # 10-15s LLM round-trip.
+        if not dry_run:
+            session.commit()
+
     return result
 
 
