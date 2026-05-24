@@ -227,8 +227,11 @@ function SignalDetail({ signalId, onBack }: { signalId: string; onBack: () => vo
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3 flex items-center gap-2">
             <CheckCircle size={14} />
+            {/* Per Rigby PR-review on #19: header copy stays user-facing.
+                "Pre-generated" leaks the implementation; "Action Plan" is
+                fine but plural reads better when there are multiple. */}
             {action_cards.some(a => a.is_curated_pregen)
-              ? 'Pre-generated Action Plan'
+              ? 'Suggested Next Steps'
               : 'Action Plan'}
           </h2>
           {action_cards.map(ac => {
@@ -262,13 +265,18 @@ function SignalDetail({ signalId, onBack }: { signalId: string; onBack: () => vo
                     <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded border ${typeStyle}`}>
                       {ac.action_type}
                     </span>
+                    {/* Per Rigby PR-review on #19: pill copy is
+                        user-facing. "regen" is internal jargon;
+                        "Needs retry" communicates system state without
+                        requiring implementation knowledge. "AI draft"
+                        beats "Pre-generated" for the same reason. */}
                     {needsRegen ? (
                       <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 flex items-center gap-1">
-                        <RefreshCw size={10} /> Needs regen
+                        <RefreshCw size={10} /> Needs retry
                       </span>
                     ) : (
                       <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded bg-green-500/10 text-green-400 flex items-center gap-1">
-                        <Sparkles size={10} /> Pre-generated
+                        <Sparkles size={10} /> AI draft
                       </span>
                     )}
                     {ac.generated_by && !needsRegen && (
