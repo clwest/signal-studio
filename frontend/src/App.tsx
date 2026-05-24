@@ -331,7 +331,7 @@ export default function App() {
   const [selectedSignal, setSelectedSignal] = useState<string | null>(null)
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [loading, setLoading] = useState(true)
-  const [view, setView] = useState<'signals' | 'curated' | 'brain'>('signals')
+  const [view, setView] = useState<'signals' | 'curated' | 'brain' | 'how-it-works'>('signals')
 
   // Stable refetch helper so the SSE handler can call it without
   // chasing the useEffect dependency closure.
@@ -419,6 +419,23 @@ export default function App() {
     )
   }
 
+  if (view === 'how-it-works') {
+    return (
+      <div className="min-h-screen bg-gray-950 p-6">
+        <HowItWorksPage
+          onBack={() => setView('signals')}
+          onJoinEarlyAccess={() => {
+            // Bounce back to the signals view; the paid-interest pill
+            // is anchored bottom-right on that view. Scroll-into-view
+            // handled by the pill's own logic. If/when the pill grows
+            // an imperative "open" handle, swap this for that.
+            setView('signals')
+          }}
+        />
+      </div>
+    )
+  }
+
   const categories = ['all', 'tech', 'business', 'crypto', 'career', 'security']
 
   return (
@@ -431,7 +448,11 @@ export default function App() {
               SignalStudio
             </h1>
             <p className="text-gray-500 text-sm mt-1">Real-time opportunity intelligence</p>
-            <button onClick={() => setView('brain')} className="mt-2 text-xs text-blue-400 hover:text-blue-300 transition">→ Ask Rigby (u-d-b PA)</button>
+            <div className="mt-2 flex items-center gap-3 text-xs">
+              <button onClick={() => setView('brain')} className="text-blue-400 hover:text-blue-300 transition">→ Ask Rigby (u-d-b PA)</button>
+              <span className="text-gray-700">·</span>
+              <button onClick={() => setView('how-it-works')} className="text-gray-500 hover:text-gray-300 transition">How it works</button>
+            </div>
           </div>
           {stats && (
             <div className="flex items-center gap-4 text-xs text-gray-500">
@@ -891,3 +912,230 @@ function BrainPage() {
     </div>
   )
 }
+
+
+// ── How it works — explainer page (Session 1140 post-close) ──────────────────
+//
+// Co-authored with Rigby (PA conversation pa-d19c1674b936):
+//   - Structure (7 sections) + audience choice (operator-first) +
+//     storytelling spine (Monday side-by-side) + tone (in-product
+//     dark/dense, with breathing room) + framing (early access, not
+//     pretend-pricing): Rigby.
+//   - JSX scaffold + first-pass copy: Claude.
+//   - Copy iteration block-by-block: see commit history.
+//
+// Truth contract:
+//   - Every "what you can do today" claim must be runtime-verifiable
+//     against the current product. No aspirational features in this
+//     block.
+//   - The "What's not built yet" section is the honesty pressure
+//     valve — if you'd be tempted to write something aspirational
+//     above, put it here instead.
+//   - Pricing intentionally not shown: paid tier doesn't exist;
+//     paid-interest form is the CTA so we collect signal honestly.
+function HowItWorksPage({ onBack, onJoinEarlyAccess }: { onBack: () => void; onJoinEarlyAccess: () => void }) {
+  return (
+    <div className="max-w-4xl mx-auto">
+      <button onClick={onBack} className="flex items-center gap-1 text-gray-500 hover:text-white mb-8 transition-colors text-sm">
+        <ArrowLeft size={14} /> Back to signals
+      </button>
+
+      {/* ── Section 1: Hero ─── (copy: Rigby final, conversation pa-d19c1674b936) ── */}
+      <section className="mb-16">
+        <div className="text-[10px] uppercase tracking-widest text-blue-400 mb-3">How it works</div>
+        <h1 className="text-4xl md:text-5xl font-bold text-white leading-tight mb-4">
+          Start your week with 10 decision-ready signals — not 100 alerts.
+        </h1>
+        <p className="text-lg text-gray-400 leading-relaxed max-w-2xl">
+          SignalStudio watches the web for you — news, social, and RSS. It clusters what's coherent,
+          discards what isn't, and delivers ten high-signal briefs each day with suggested next steps you
+          can act on immediately.
+        </p>
+        <div className="mt-6 flex items-center gap-3 text-xs text-gray-500">
+          <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-amber-400" /> Early access</span>
+          <span className="text-gray-700">·</span>
+          <span>Paid tier in design</span>
+        </div>
+      </section>
+
+      {/* ── Section 2: Monday side-by-side ─── (copy: Rigby final) ── */}
+      <section className="mb-16">
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-6">Your Monday morning</h2>
+        <div className="grid md:grid-cols-2 gap-6">
+          <div className="p-6 rounded-2xl bg-gradient-to-br from-red-950/30 to-gray-900/60 border border-red-900/20">
+            <div className="text-[10px] uppercase tracking-wider text-red-400 mb-3">Without SignalStudio</div>
+            <ul className="space-y-3 text-sm text-gray-300">
+              <li className="flex gap-2"><span className="text-red-400">·</span>A pile of alerts since Friday — most are duplicates or noise</li>
+              <li className="flex gap-2"><span className="text-red-400">·</span>X / LinkedIn skim, 25 minutes gone</li>
+              <li className="flex gap-2"><span className="text-red-400">·</span>Newsletters opened, half-read, and forgotten</li>
+              <li className="flex gap-2"><span className="text-red-400">·</span>A blank page titled: "What's important this week?"</li>
+              <li className="flex gap-2"><span className="text-red-400">·</span>Noon. Still no clear bet — just more tabs.</li>
+            </ul>
+          </div>
+          <div className="p-6 rounded-2xl bg-gradient-to-br from-blue-950/30 to-purple-950/20 border border-blue-800/30">
+            <div className="text-[10px] uppercase tracking-wider text-blue-400 mb-3">With SignalStudio</div>
+            <ul className="space-y-3 text-sm text-gray-300">
+              <li className="flex gap-2"><span className="text-blue-400">·</span>Open Curated Top 10</li>
+              <li className="flex gap-2"><span className="text-blue-400">·</span>Ten coherent clusters — each backed by multiple source links</li>
+              <li className="flex gap-2"><span className="text-blue-400">·</span>Click a cluster: evidence cards, citations, and a clean source list</li>
+              <li className="flex gap-2"><span className="text-blue-400">·</span>Suggested next steps (and sometimes a copy-ready outreach draft)</li>
+              <li className="flex gap-2"><span className="text-blue-400">·</span>8:20 AM. You've already picked one thing to act on.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Section 3: How it works — 5 steps ─── (copy: Rigby final) ── */}
+      <section className="mb-16">
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-2">How the pipeline works</h2>
+        <p className="text-sm text-gray-500 leading-relaxed max-w-2xl mb-6">
+          You see the Curated Top 10 and the Suggested Next Steps. The rest runs in the background to cut
+          noise and keep clusters coherent.
+        </p>
+        <div className="space-y-4">
+          {[
+            {
+              n: 1, title: 'Spiders watch the web',
+              body: 'A network of spiders continuously pulls in public signals from news, social, and RSS (plus other public sources). Each item is stored with its source, timestamp, and original URL so you can always click back to the evidence.',
+            },
+            {
+              n: 2, title: 'Clustering groups what belongs together',
+              body: 'Items are grouped into clusters only when they share specific entities (people, companies, products, places). That keeps real stories together — and prevents unrelated headlines from merging into junk clusters.',
+            },
+            {
+              n: 3, title: 'A judge filters out incoherent clusters',
+              body: 'An LLM checks each cluster and rejects anything where the evidence doesn\'t actually cohere. The goal is simple: fewer false positives, more clusters that hold up when you open the sources.',
+            },
+            {
+              n: 4, title: 'A daily curator picks the Top 10',
+              body: 'Remaining clusters are scored by strength (mostly) and recency (a bit), then diversified so one theme can\'t dominate the list. The result is ten high-signal clusters you can scan fast.',
+            },
+            {
+              n: 5, title: 'Each cluster gets suggested next steps',
+              body: 'For each curated cluster, a second pass generates an action card: a clear title, 3–5 ordered steps, and — when it makes sense — a copy-ready outreach draft. You don\'t just see the signal; you get a plan.',
+            },
+          ].map(step => (
+            <div key={step.n} className="flex gap-5 p-5 rounded-xl bg-gray-900/40 border border-gray-800">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-blue-500/10 border border-blue-500/30 flex items-center justify-center text-blue-400 font-mono text-sm">
+                {step.n}
+              </div>
+              <div>
+                <h3 className="text-white font-semibold mb-1">{step.title}</h3>
+                <p className="text-sm text-gray-400 leading-relaxed">{step.body}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Section 4: What you can do today ─── (copy: Rigby final) ── */}
+      <section className="mb-16">
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-6">What's live in the app today</h2>
+        <div className="grid sm:grid-cols-2 gap-4">
+          {[
+            { icon: <Activity size={16} className="text-blue-400" />, title: 'All Signals tab', body: 'Browse every coherent cluster the judge approved — organized by pattern type, with quick scans of summary and sources.' },
+            { icon: <Star size={16} className="text-amber-400" />, title: 'Curated Top 10 tab', body: 'A ranked Top 10 that refreshes as the curator runs — designed for fast scanning, not endless feeds.' },
+            { icon: <ExternalLink size={16} className="text-purple-400" />, title: 'Evidence cards + source links', body: 'Every evidence card links back to the original URL so you can verify the source. No fabricated quotes.' },
+            { icon: <CheckCircle size={16} className="text-green-400" />, title: 'Suggested Next Steps', body: 'Pre-generated action cards with ordered steps — and sometimes a copy-ready outreach draft — attached to curated clusters.' },
+            { icon: <Sparkles size={16} className="text-pink-400" />, title: 'Brain (ask Rigby)', body: 'Ask ad-hoc questions about any signal and get a grounded answer that points back to evidence in the app.' },
+            { icon: <BarChart3 size={16} className="text-cyan-400" />, title: 'Live judge stats', body: 'Transparency on what gets accepted vs rejected, broken down by clustering method and pattern type.' },
+          ].map(item => (
+            <div key={item.title} className="p-4 rounded-xl bg-gray-900/30 border border-gray-800">
+              <div className="flex items-center gap-2 mb-2">{item.icon}<span className="text-sm font-medium text-white">{item.title}</span></div>
+              <p className="text-xs text-gray-400 leading-relaxed">{item.body}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Section 5: What's NOT built yet ─── (copy: Rigby final) ── */}
+      <section className="mb-16">
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-6">What's not built yet (honest list)</h2>
+        <p className="text-sm text-gray-500 leading-relaxed mb-4 max-w-2xl">
+          SignalStudio is early access. Here's what we haven't built yet — and what we're deciding next based
+          on demand:
+        </p>
+        <ul className="space-y-2 text-sm text-gray-400">
+          {[
+            'Personalization (a feed tuned to your industry, role, and interests)',
+            'Notifications + alerting (email / Slack / push when high-strength signals hit your verticals)',
+            'Exports (CSV / PDF / saved searches)',
+            'Team accounts and shared collections',
+            'A public API for developers',
+            'A paid tier itself — pricing is in design',
+          ].map(item => (
+            <li key={item} className="flex gap-2 pl-1">
+              <span className="text-amber-500/60 mt-1">○</span>
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-gray-600 mt-5 italic max-w-2xl">
+          Which of these would make this worth paying for? Tell us below.
+        </p>
+      </section>
+
+      {/* ── Section 6: Early access CTA ─── (copy: Rigby final) ── */}
+      <section className="mb-16">
+        <div className="p-8 rounded-2xl bg-gradient-to-br from-amber-950/40 to-orange-950/20 border border-amber-700/30">
+          <div className="text-[10px] uppercase tracking-widest text-amber-400 mb-3">Early access</div>
+          <h2 className="text-2xl font-bold text-white mb-3">Help shape what gets built next</h2>
+          <p className="text-sm text-gray-300 leading-relaxed mb-6 max-w-2xl">
+            Paid SignalStudio isn't live yet. If you'd use this weekly (or daily), tell us your use case and
+            what a fair monthly price looks like. That input decides what we build first: personalization,
+            alerts, exports, teams, or API access.
+          </p>
+          <button
+            onClick={onJoinEarlyAccess}
+            className="px-5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-amber-950 font-semibold text-sm transition-colors"
+          >
+            Join early access →
+          </button>
+        </div>
+      </section>
+
+      {/* ── Section 7: FAQ ─── (copy: Rigby final) ── */}
+      <section className="mb-16">
+        <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-6">FAQ</h2>
+        <div className="space-y-5">
+          {[
+            {
+              q: 'Is this financial advice?',
+              a: 'No. SignalStudio surfaces patterns in public data and suggests next steps for research or execution. Nothing here is a recommendation to buy or sell any security — always do your own diligence.',
+            },
+            {
+              q: 'Where do the signals come from?',
+              a: 'From public sources pulled via automated crawlers (news sites, RSS feeds, and other public web sources). Every evidence card cites and links to the original URL so you can verify it yourself.',
+            },
+            {
+              q: 'How is this different from Google Alerts or a Twitter list?',
+              a: 'Alerts give you raw matches; you still do the synthesis. SignalStudio clusters related items, filters for coherence, summarizes what matters, and attaches suggested next steps — so you can move from "noise" to "decision" fast.',
+            },
+            {
+              q: 'Can I request specific sources or verticals?',
+              a: 'Yes — tell us in the early-access form. Expanding source coverage and vertical tuning are two of the biggest levers we\'re prioritizing for the paid tier.',
+            },
+            {
+              q: 'How often does the data refresh?',
+              a: 'Ingestion runs continuously, and clustering/curation refresh throughout the day. The Curated Top 10 can change as new signals clear the quality bar.',
+            },
+            {
+              q: 'What happens to the data I look at?',
+              a: 'Right now, nothing — we don\'t use your reading behavior to personalize your feed. If/when personalization ships, it will be opt-in and clearly explained.',
+            },
+          ].map(item => (
+            <div key={item.q} className="border-l-2 border-gray-800 pl-5">
+              <div className="text-sm font-semibold text-white mb-1.5">{item.q}</div>
+              <p className="text-sm text-gray-400 leading-relaxed">{item.a}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="text-center text-xs text-gray-700 py-8">
+        SignalStudio · early access · co-authored with Rigby (the platform's PA)
+      </div>
+    </div>
+  )
+}
+
