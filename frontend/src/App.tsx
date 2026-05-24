@@ -151,10 +151,27 @@ function SignalDetail({ signalId, onBack }: { signalId: string; onBack: () => vo
               <blockquote className="text-gray-400 text-xs italic border-l-2 border-gray-700 pl-3 mb-2">
                 {card.excerpt_is_quote ? `"${card.excerpt}"` : card.excerpt}
               </blockquote>
-              <a href={card.source_url} target="_blank" rel="noopener noreferrer"
-                className="text-xs text-blue-500 hover:text-blue-400 flex items-center gap-1">
-                <ExternalLink size={10} /> {card.source_title} — {card.source_domain}
-              </a>
+              {/*
+                Render as a real link only when source_url is non-empty.
+                Pre-u-d-b-PR#2167 clusters have empty source_url (Phase 1
+                envelope shipped url=""); rendering <a href=""> there
+                would reload the page on click, which surfaced as the
+                "links don't go to the correct articles" bug. After the
+                upstream fix, new clusters carry real URLs; legacy rows
+                still don't and degrade gracefully here.
+              */}
+              {card.source_url ? (
+                <a href={card.source_url} target="_blank" rel="noopener noreferrer"
+                  className="text-xs text-blue-500 hover:text-blue-400 flex items-center gap-1">
+                  <ExternalLink size={10} /> {card.source_title} — {card.source_domain}
+                </a>
+              ) : (
+                <div className="text-xs text-gray-600 flex items-center gap-1" title="Source URL not captured for this cluster (pre-PR#2167 ingest)">
+                  <ExternalLink size={10} className="opacity-40" />
+                  <span>{card.source_title || card.source_domain || 'Source'}</span>
+                  <span className="text-gray-700 italic">— link unavailable</span>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -164,21 +181,38 @@ function SignalDetail({ signalId, onBack }: { signalId: string; onBack: () => vo
         <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3 flex items-center gap-2">
           <ExternalLink size={14} /> Sources ({sources.length})
         </h2>
-        <div className="space-y-2">
-          {sources.map(src => (
-            <a key={src.id} href={src.url} target="_blank" rel="noopener noreferrer"
-              className="flex items-center gap-3 p-3 rounded-lg bg-gray-900/30 hover:bg-gray-900/60 transition-colors group">
-              <div className="w-8 h-8 rounded bg-gray-800 flex items-center justify-center text-[10px] text-gray-500 font-mono">
-                {src.domain.slice(0, 2).toUpperCase()}
-              </div>
-              <div className="flex-1">
-                <div className="text-sm text-gray-300 group-hover:text-white transition-colors">{src.title}</div>
-                <div className="text-xs text-gray-600">{src.domain}{src.spider_name ? ` via ${src.spider_name}` : ''}</div>
-              </div>
-              <ExternalLink size={12} className="text-gray-700 group-hover:text-blue-400 transition-colors" />
-            </a>
-          ))}
-        </div>
+        {sources.length > 0 ? (
+          <div className="space-y-2">
+            {sources.map(src => (
+              <a key={src.id} href={src.url} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-3 p-3 rounded-lg bg-gray-900/30 hover:bg-gray-900/60 transition-colors group">
+                <div className="w-8 h-8 rounded bg-gray-800 flex items-center justify-center text-[10px] text-gray-500 font-mono">
+                  {src.domain.slice(0, 2).toUpperCase()}
+                </div>
+                <div className="flex-1">
+                  <div className="text-sm text-gray-300 group-hover:text-white transition-colors">{src.title}</div>
+                  <div className="text-xs text-gray-600">{src.domain}{src.spider_name ? ` via ${src.spider_name}` : ''}</div>
+                </div>
+                <ExternalLink size={12} className="text-gray-700 group-hover:text-blue-400 transition-colors" />
+              </a>
+            ))}
+          </div>
+        ) : (
+          /*
+            Empty-state copy per Rigby's PR-review caveat: an empty list
+            looks like "no sources" when actually it's "SourceItem rows
+            aren't populated for ingested clusters yet — only seed/demo
+            clusters have them" (signal_ingest.py only creates
+            EvidenceCards, not SourceItems). Tracked as a follow-up
+            signal-studio change; until then the panel should explain
+            itself rather than imply the cluster has zero sources.
+          */
+          <div className="p-3 rounded-lg bg-gray-900/30 border border-dashed border-gray-800 text-xs text-gray-500">
+            Sources not yet available for ingested clusters. Evidence cards
+            above link to the underlying articles when source URLs are
+            captured upstream.
+          </div>
+        )}
       </div>
 
       {action_cards.length > 0 && (
