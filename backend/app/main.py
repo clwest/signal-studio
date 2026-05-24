@@ -515,6 +515,12 @@ def get_signal(signal_id: UUID):
                 }
                 for s in cluster.source_items
             ],
+            # Session 1140 (A): action_cards now carry the Session 1140
+            # pre-generated fields (external_id, generated_by, outreach_draft)
+            # alongside the legacy on-demand shape. Frontend uses
+            # `is_curated_pregen` (derived from external_id presence) to
+            # branch between the two render paths — Rigby PR-review
+            # suggestion on signal-studio#18 captured for PR 3.
             "action_cards": [
                 {
                     "id": str(a.id),
@@ -522,6 +528,10 @@ def get_signal(signal_id: UUID):
                     "steps": a.steps,
                     "action_type": a.action_type,
                     "status": a.status,
+                    "outreach_draft": a.outreach_draft or "",
+                    "external_id": a.external_id,
+                    "generated_by": a.generated_by,
+                    "is_curated_pregen": a.external_id is not None,
                 }
                 for a in cluster.action_cards
             ],
