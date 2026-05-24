@@ -62,6 +62,15 @@ def main():
         action="store_true",
         help="Log every cluster decision, not just summary stats.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Ignore content-hash idempotency and re-summarize every row. "
+            "Use this when switching models or prompts — inputs unchanged "
+            "but a fresh verdict is wanted."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -107,6 +116,7 @@ def main():
         limit=args.limit,
         model=args.model,
         dry_run=args.dry_run,
+        force=args.force,
     )
 
     if args.dry_run:

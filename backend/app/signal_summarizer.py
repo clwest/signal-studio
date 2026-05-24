@@ -51,16 +51,26 @@ logger = logging.getLogger(__name__)
 # Constants
 # ──────────────────────────────────────────────────────────────────────
 
-# Cheap model — quality is acceptable for "1-sentence summary from 5
-# headlines". Don't reach for the bigger ones; cost discipline.
-DEFAULT_MODEL = "gpt-4o-mini"
+# Reasoning model. Per Chris (Session 1138 quality-fix round 2): gpt-5
+# tier required; earlier gpt-4o-mini run rejected 92% of clusters and
+# may have been too quick to call them incoherent. The reasoning model
+# can spend more thought before deciding.
+#
+# Reasoning-model contract (per u-d-b CLAUDE.md):
+#   - param name is `max_completion_tokens`, NOT `max_tokens`
+#   - DO NOT pass `temperature`
+#   - the cap includes BOTH reasoning tokens AND visible output, so
+#     bump it well above what raw output would need
+DEFAULT_MODEL = "gpt-5-mini"
 
 # Cap on evidence cards we feed the LLM. Most clusters have 5; we cap
 # at 8 to bound prompt length even when upstream loosens its cap.
 MAX_EVIDENCE_PER_CLUSTER = 8
 
-# Reasonable per-call ceiling. The schema we ask for is small.
-MAX_COMPLETION_TOKENS = 250
+# Reasoning-aware budget. Visible JSON output is ~200 tokens; reasoning
+# can spend 1k-3k thinking before emitting it. 4000 leaves headroom
+# without runaway spend.
+MAX_COMPLETION_TOKENS = 4000
 
 # State values — match SignalCluster.summary_quality.
 QUALITY_RAW = "raw"
@@ -288,10 +298,16 @@ class BatchResult:
 
     @property
     def estimated_cost_usd(self) -> float:
-        """gpt-4o-mini pricing as of 2026-05: $0.15/$0.60 per 1M tokens."""
+        """Approximate cost in USD for a gpt-5-mini run.
+
+        Pricing changes; numbers here are estimates as of 2026-05.
+        gpt-5-mini sits at roughly $2/$8 per 1M tokens (input/output).
+        Reasoning tokens count as output. Verify against your OpenAI
+        billing dashboard for the authoritative number.
+        """
         return (
-            self.input_tokens_total * 0.15 / 1_000_000
-            + self.output_tokens_total * 0.60 / 1_000_000
+            self.input_tokens_total * 2.0 / 1_000_000
+            + self.output_tokens_total * 8.0 / 1_000_000
         )
 
 
@@ -302,6 +318,7 @@ def summarize_pending(
     client: Optional[OpenAI] = None,
     model: str = DEFAULT_MODEL,
     dry_run: bool = False,
+    force: bool = False,
 ) -> BatchResult:
     """Walk all `raw` clusters (and stale-hash `summarized` clusters)
     and run the LLM summary on each.
@@ -311,9 +328,13 @@ def summarize_pending(
         limit:   Cap the number of clusters processed in one run.
                  Useful for cost-bounded backfills.
         client:  Optional preconstructed OpenAI client (test hook).
-        model:   LLM model name. Defaults to gpt-4o-mini.
+        model:   LLM model name. Defaults to gpt-5-mini.
         dry_run: When True, prints what would happen but doesn't call
                  the LLM or persist.
+        force:   When True, ignores the content-hash idempotency check
+                 and re-summarizes every row. Use when changing models
+                 or prompt — the inputs haven't changed, but you want
+                 a fresh verdict.
 
     Returns BatchResult with cost estimate.
     """
@@ -346,7 +367,7 @@ def summarize_pending(
             continue
         content_hash = _compute_content_hash(claim_texts, domains)
 
-        if should_skip(cluster, content_hash):
+        if not force and should_skip(cluster, content_hash):
             result.skipped_idempotent += 1
             continue
 
