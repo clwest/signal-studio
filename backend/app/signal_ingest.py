@@ -134,6 +134,48 @@ def _ensure_schema(engine) -> None:
                 "WHERE external_cluster_id IS NOT NULL"
             )
 
+        # Session 1138 quality-fix — LLM-summarized fields. Same pattern
+        # as Phase 1/2 columns above; idempotent across Postgres + SQLite.
+        if "summary_quality" not in existing_cols:
+            logger.info(
+                "[signal-ingest] adding signal_clusters.summary_quality + LLM fields"
+            )
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters "
+                "ADD COLUMN summary_quality VARCHAR(16) DEFAULT 'raw'"
+            )
+        if "summarized_title" not in existing_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters ADD COLUMN summarized_title TEXT"
+            )
+        if "summarized_blurb" not in existing_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters ADD COLUMN summarized_blurb TEXT"
+            )
+        if "clean_tags" not in existing_cols:
+            # Postgres: JSONB. SQLite: just TEXT (SQLAlchemy maps via JSON adapter).
+            if dialect == "sqlite":
+                conn.exec_driver_sql(
+                    "ALTER TABLE signal_clusters ADD COLUMN clean_tags TEXT"
+                )
+            else:
+                conn.exec_driver_sql(
+                    "ALTER TABLE signal_clusters ADD COLUMN clean_tags JSONB"
+                )
+        if "summarized_at" not in existing_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters ADD COLUMN summarized_at TIMESTAMP"
+            )
+        if "summarized_content_hash" not in existing_cols:
+            conn.exec_driver_sql(
+                "ALTER TABLE signal_clusters ADD COLUMN summarized_content_hash VARCHAR(64)"
+            )
+        # Quality filter index — UI queries WHERE summary_quality != 'rejected'.
+        conn.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_signal_clusters_summary_quality "
+            "ON signal_clusters(summary_quality)"
+        )
+
 
 # ─── Envelope upsert ──────────────────────────────────────────────────
 

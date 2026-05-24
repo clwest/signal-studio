@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -91,6 +91,23 @@ async def _start_fleet_signal_ingest():
     logger.info("[startup] fleet signal ingest tasks spawned")
 
 
+@app.on_event("startup")
+def _start_auto_summarizer():
+    """Spin up the auto-summarize worker on a daemon thread.
+
+    Polls every SUMMARIZER_INTERVAL_SECONDS (default 60) for any new
+    raw clusters arriving from the ingest path, summarizes up to
+    SUMMARIZER_BATCH_SIZE per tick. Idempotent — won't reprocess
+    already-summarized rows. Daemon thread so it dies with the process.
+
+    Disable with SUMMARIZER_ENABLED=0 if you want to backfill manually
+    via the CLI instead. Worker also self-disables silently when
+    OPENAI_API_KEY is missing or placeholder.
+    """
+    from app.signal_summarizer import start_auto_summarize_thread
+    start_auto_summarize_thread(SessionLocal)
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -102,6 +119,18 @@ def get_db():
 @app.get("/api/health")
 def health():
     return {"status": "healthy", "service": "SignalStudio", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/summarizer-status")
+def summarizer_status():
+    """Auto-summarize worker state — for ops visibility.
+
+    Surfaces what the background worker has done since process start:
+    ticks elapsed, total summarized/rejected/error counts, cumulative
+    cost in USD, last-tick stats, and any most-recent error.
+    """
+    from app.signal_summarizer import get_summarizer_state
+    return get_summarizer_state()
 
 
 # ── Brain bridge — proxy questions to u-d-b's PA (Rigby) ───────────────────
@@ -139,33 +168,174 @@ def brain_ask(req: BrainAskRequest):
     return result
 
 
+# ── Paid-interest (Session 1138 — Decision 13 demand-gate) ─────────────────
+# Free-tier users submit interest in a paid version. Per-IP rate-limit
+# 3/hour + email dedup before forwarding to u-d-b (which also dedups
+# server-side as the safety net). All rows live in u-d-b's
+# core_fleetpaidinterest table; queryable by Jessica via Rigby's
+# paid_interest_status PA tool.
+
+class PaidInterestRequest(BaseModel):
+    email: str
+    use_case: str
+    willing_pay: Optional[int] = None
+    workspace_size: Optional[str] = None
+    user_id_claim: Optional[str] = None
+
+
+# Simple in-memory rate-limit. Keyed by client IP. Stores
+# list[float-epoch-seconds] of recent submissions. Hour window. Single
+# process per container — no Redis needed for this scope.
+_RATE_LIMIT_WINDOW_SEC = 3600
+_RATE_LIMIT_MAX = 3
+_rate_limit_state: dict[str, list[float]] = {}
+
+
+def _check_rate_limit(client_ip: str) -> bool:
+    """Return True when the request is allowed, False when over limit."""
+    import time as _time
+    now = _time.monotonic()
+    cutoff = now - _RATE_LIMIT_WINDOW_SEC
+    recent = [t for t in _rate_limit_state.get(client_ip, []) if t >= cutoff]
+    if len(recent) >= _RATE_LIMIT_MAX:
+        _rate_limit_state[client_ip] = recent
+        return False
+    recent.append(now)
+    _rate_limit_state[client_ip] = recent
+    return True
+
+
+@app.post("/api/paid-interest")
+def submit_paid_interest_view(req: PaidInterestRequest, request: Request):
+    from app.brain_client import submit_paid_interest
+
+    # ── Validation ────────────────────────────────────────────────────
+    email = req.email.strip().lower()
+    use_case = req.use_case.strip()
+    if not email:
+        raise HTTPException(400, "email is required")
+    if not use_case:
+        raise HTTPException(400, "use_case is required")
+    if len(use_case) > 140:
+        raise HTTPException(400, "use_case must be ≤140 characters")
+    if req.willing_pay is not None and req.willing_pay < 0:
+        raise HTTPException(400, "willing_pay must be >= 0")
+    if req.workspace_size and req.workspace_size not in {"solo", "2-5", "6-20", "20+"}:
+        raise HTTPException(400, "workspace_size must be one of solo/2-5/6-20/20+")
+
+    # ── Rate-limit (per IP, in-memory) ────────────────────────────────
+    client_ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+    if not _check_rate_limit(client_ip):
+        raise HTTPException(
+            429,
+            f"rate-limited — max {_RATE_LIMIT_MAX} submissions per hour per IP",
+        )
+
+    # ── Forward to u-d-b ──────────────────────────────────────────────
+    result = submit_paid_interest(
+        email=email,
+        use_case=use_case,
+        willing_pay=req.willing_pay,
+        workspace_size=req.workspace_size,
+        user_id_claim=req.user_id_claim,
+    )
+    if not result.get("ok"):
+        status_code = result.get("status_code") or 502
+        raise HTTPException(
+            status_code if status_code >= 400 else 502,
+            result.get("error", "paid-interest submission failed"),
+        )
+    return {
+        "ok": True,
+        "id": result.get("id"),
+        "deduped": result.get("deduped", False),
+        "message": (
+            "Got it. We'll email you at launch."
+            if not result.get("deduped")
+            else "Already captured — you'll hear from us at launch."
+        ),
+    }
+
+
 @app.get("/api/signals")
 def list_signals(
     category: Optional[str] = None,
     limit: int = Query(default=20, le=50),
     offset: int = 0,
+    include_raw: bool = Query(
+        default=False,
+        description=(
+            "By default the response hides clusters that haven't been "
+            "LLM-summarized yet OR were rejected as incoherent. Set "
+            "include_raw=true to see everything regardless of quality."
+        ),
+    ),
+    skip_dedup: bool = Query(
+        default=False,
+        description=(
+            "By default the response collapses near-duplicate clusters "
+            "(same theme summarized from different upstream clusters — "
+            "see app.signal_deduper). Set skip_dedup=true to see the "
+            "pre-dedup list."
+        ),
+    ),
 ):
-    """List signal clusters, optionally filtered by category."""
+    """List signal clusters, optionally filtered by category.
+
+    Default response only includes `summary_quality='summarized'` rows
+    so a visitor sees insight-grade content. Rejected (incoherent)
+    clusters and not-yet-summarized raw clusters are hidden by default.
+    A deterministic deduper then collapses near-duplicate clusters
+    (e.g. four "Tableau Developer" rows → 1) so visitors don't see
+    the same theme repeated. Pass `include_raw=true` to see all
+    quality states; pass `skip_dedup=true` to see the pre-dedup list.
+
+    When a row has summarized_title/blurb populated, those are
+    surfaced as `title` + `summary` on the wire — the underlying
+    raw meta-stat title is hidden because that's the whole point of
+    this filter. Clients shouldn't need to know the difference.
+    """
+    from app.signal_deduper import deduplicate_clusters
+
     db = SessionLocal()
     try:
         q = db.query(SignalCluster).order_by(desc(SignalCluster.signal_strength))
         if category and category != "all":
             q = q.filter(SignalCluster.category == category)
-        total = q.count()
-        clusters = q.offset(offset).limit(limit).all()
+        if not include_raw:
+            q = q.filter(SignalCluster.summary_quality == "summarized")
+
+        # Fetch a larger window so dedup has the full set to work over.
+        # Without this we'd run dedup on the slice and miss duplicates
+        # whose representative happens to fall on another page.
+        pre_dedup = q.all()
+        if skip_dedup:
+            deduped = pre_dedup
+            duplicates_merged = 0
+        else:
+            dedup = deduplicate_clusters(pre_dedup)
+            deduped = dedup.kept
+            duplicates_merged = dedup.duplicates_merged
+
+        total = len(deduped)
+        clusters = deduped[offset:offset + limit]
 
         return {
             "signals": [
                 {
                     "id": str(c.id),
-                    "title": c.title,
-                    "summary": c.summary[:200],
+                    "title": c.summarized_title or c.title,
+                    "summary": (c.summarized_blurb or c.summary or "")[:300],
                     "category": c.category,
                     "confidence_score": c.confidence_score,
                     "source_count": c.source_count,
                     "signal_strength": c.signal_strength,
                     "status": c.status,
-                    "tags": c.tags or [],
+                    "tags": (c.clean_tags if c.clean_tags else c.tags) or [],
+                    "summary_quality": c.summary_quality or "raw",
                     "created_at": c.created_at.isoformat() if c.created_at else None,
                     "evidence_count": len(c.evidence_cards),
                     "has_action": len(c.action_cards) > 0,
@@ -173,6 +343,7 @@ def list_signals(
                 for c in clusters
             ],
             "total": total,
+            "duplicates_merged": duplicates_merged,
             "offset": offset,
             "limit": limit,
         }
@@ -235,13 +406,22 @@ def list_curated_signals(limit: int = Query(default=10, le=50)):
     """
     db = SessionLocal()
     try:
-        rows = (
+        # Pull MORE than `limit` so the deduper sees enough breadth.
+        # Without this we'd dedup a tiny window and still surface
+        # duplicates that fall just outside it.
+        from app.signal_deduper import deduplicate_clusters
+        pre_dedup = (
             db.query(SignalCluster)
             .filter(SignalCluster.curated_rank.isnot(None))
+            # Hide curated rows that came back rejected — those wouldn't
+            # have been curated by SignalCuratorAgent if upstream knew,
+            # but we filter defensively at the read-side too.
+            .filter(SignalCluster.summary_quality != "rejected")
             .order_by(SignalCluster.curated_rank.asc())
-            .limit(limit)
             .all()
         )
+        deduped = deduplicate_clusters(pre_dedup).kept
+        rows = deduped[:limit]
         if not rows:
             return {
                 "curated": [],
@@ -256,13 +436,14 @@ def list_curated_signals(limit: int = Query(default=10, le=50)):
                     "external_cluster_id": c.external_cluster_id,
                     "rank": c.curated_rank,
                     "curated_score": c.curated_score,
-                    "title": c.title,
-                    "summary": c.summary[:200] if c.summary else "",
+                    "title": c.summarized_title or c.title,
+                    "summary": ((c.summarized_blurb or c.summary or "")[:300]),
                     "category": c.category,
                     "confidence_score": c.confidence_score,
                     "signal_strength": c.signal_strength,
                     "source_count": c.source_count,
-                    "tags": c.tags or [],
+                    "tags": (c.clean_tags if c.clean_tags else c.tags) or [],
+                    "summary_quality": c.summary_quality or "raw",
                     "created_at": c.created_at.isoformat() if c.created_at else None,
                     "evidence_count": len(c.evidence_cards),
                 }
@@ -296,14 +477,15 @@ def get_signal(signal_id: UUID):
         return {
             "signal": {
                 "id": str(cluster.id),
-                "title": cluster.title,
-                "summary": cluster.summary,
+                "title": cluster.summarized_title or cluster.title,
+                "summary": cluster.summarized_blurb or cluster.summary or "",
                 "category": cluster.category,
                 "confidence_score": cluster.confidence_score,
                 "source_count": cluster.source_count,
                 "signal_strength": cluster.signal_strength,
                 "status": cluster.status,
-                "tags": cluster.tags or [],
+                "tags": (cluster.clean_tags if cluster.clean_tags else cluster.tags) or [],
+                "summary_quality": cluster.summary_quality or "raw",
                 "created_at": cluster.created_at.isoformat() if cluster.created_at else None,
             },
             "evidence_cards": [
@@ -350,22 +532,59 @@ def get_signal(signal_id: UUID):
 
 @app.get("/api/stats")
 def get_stats():
-    """Dashboard stats."""
+    """Dashboard stats.
+
+    Counts surface BOTH "shown to users" (summarized only) AND total
+    pipeline state. Public stats badges in the frontend show
+    `active_signals` which now means insight-grade only — the
+    `raw_pending` + `rejected` counts are exposed for ops visibility.
+    """
+    from app.signal_deduper import deduplicate_clusters
     db = SessionLocal()
     try:
+        summarized_rows = (
+            db.query(SignalCluster)
+            .filter(
+                SignalCluster.status == "active",
+                SignalCluster.summary_quality == "summarized",
+            )
+            .all()
+        )
+        # Show-to-user count: summarized + active, after dedup.
+        dedup = deduplicate_clusters(summarized_rows)
+        active = len(dedup.kept)
+        duplicates_merged = dedup.duplicates_merged
+
         total = db.query(SignalCluster).count()
-        active = db.query(SignalCluster).filter(SignalCluster.status == "active").count()
-        categories = {}
-        for c in db.query(SignalCluster).all():
+        raw_pending = (
+            db.query(SignalCluster)
+            .filter(SignalCluster.summary_quality == "raw")
+            .count()
+        )
+        rejected = (
+            db.query(SignalCluster)
+            .filter(SignalCluster.summary_quality == "rejected")
+            .count()
+        )
+
+        # Category counts on the DEDUPED set — that's what the user
+        # actually sees, so showing a "Tech: 12" badge that collapses
+        # to 3 after dedup would be misleading.
+        categories: dict[str, int] = {}
+        for c in dedup.kept:
             categories[c.category] = categories.get(c.category, 0) + 1
-        avg_confidence = 0
-        if total > 0:
-            scores = [c.confidence_score for c in db.query(SignalCluster).all()]
-            avg_confidence = sum(scores) / len(scores)
+
+        avg_confidence = 0.0
+        if active > 0:
+            scores = [c.confidence_score for c in dedup.kept if c.confidence_score is not None]
+            avg_confidence = sum(scores) / len(scores) if scores else 0.0
 
         return {
             "total_signals": total,
             "active_signals": active,
+            "raw_pending": raw_pending,
+            "rejected": rejected,
+            "duplicates_merged": duplicates_merged,
             "categories": categories,
             "avg_confidence": round(avg_confidence, 2),
             "evidence_cards_total": db.query(EvidenceCard).count(),

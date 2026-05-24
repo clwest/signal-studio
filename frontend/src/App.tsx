@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Activity, Zap, TrendingUp, Shield, Briefcase, ChevronRight, ArrowLeft, Star, ExternalLink, CheckCircle, Clock, BarChart3 } from 'lucide-react'
+import { Activity, Zap, TrendingUp, Shield, Briefcase, ChevronRight, ArrowLeft, Star, ExternalLink, CheckCircle, Clock, BarChart3, Bell, X } from 'lucide-react'
 import './App.css'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8003/api'
@@ -38,6 +38,7 @@ interface ActionCardData {
 
 interface Stats {
   total_signals: number; active_signals: number
+  raw_pending?: number; rejected?: number
   categories: Record<string, number>; avg_confidence: number
   evidence_cards_total: number; action_cards_total: number
 }
@@ -314,7 +315,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-gray-950 p-6">
       <div className="max-w-6xl mx-auto">
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-white flex items-center gap-2">
               <Activity className="text-blue-400" size={24} />
@@ -325,11 +326,56 @@ export default function App() {
           </div>
           {stats && (
             <div className="flex items-center gap-4 text-xs text-gray-500">
-              <span className="flex items-center gap-1"><Activity size={12} className="text-green-400" /> {stats.active_signals} active</span>
+              <span className="flex items-center gap-1"><Activity size={12} className="text-green-400" /> {stats.active_signals} insight-grade</span>
               <span className="flex items-center gap-1"><Star size={12} className="text-blue-400" /> {stats.evidence_cards_total} evidence</span>
               <span className="flex items-center gap-1"><BarChart3 size={12} className="text-purple-400" /> {Math.round(stats.avg_confidence * 100)}% confidence</span>
             </div>
           )}
+        </div>
+
+        {/* Hero / value-prop block — explains what this is to a first-time visitor. */}
+        <div className="mb-8 p-6 rounded-2xl bg-gradient-to-br from-blue-950/40 via-gray-900 to-purple-950/30 border border-blue-900/40">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="md:col-span-2 space-y-3">
+              <h2 className="text-xl font-semibold text-white">
+                What's actually happening across tech, finance, and the job market — in one place.
+              </h2>
+              <p className="text-sm text-gray-400 leading-relaxed">
+                SignalStudio reads {stats?.evidence_cards_total ?? '600+'} headlines and articles a day across a fleet of feeds,
+                clusters them by topic, and turns each cluster into one sentence you can act on.
+                We hide noise; only insight-grade signals show below.
+              </p>
+              <div className="flex items-center gap-3 text-xs text-gray-500 pt-1">
+                <span className="px-2 py-0.5 rounded bg-gray-800/60 border border-gray-700/50">demand spikes</span>
+                <span className="px-2 py-0.5 rounded bg-gray-800/60 border border-gray-700/50">emerging trends</span>
+                <span className="px-2 py-0.5 rounded bg-gray-800/60 border border-gray-700/50">opportunity windows</span>
+                <span className="px-2 py-0.5 rounded bg-gray-800/60 border border-gray-700/50">sentiment shifts</span>
+              </div>
+            </div>
+            <div className="bg-gray-950/50 rounded-xl p-4 border border-gray-800/50">
+              <div className="text-xs uppercase tracking-wide text-gray-500 mb-2">Today's pipeline</div>
+              <div className="space-y-1.5 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Headlines processed</span>
+                  <span className="text-white font-mono">{stats?.evidence_cards_total ?? '—'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-400">Insight-grade signals</span>
+                  <span className="text-emerald-400 font-mono">{stats?.active_signals ?? '—'}</span>
+                </div>
+                {typeof stats?.rejected === 'number' && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-400">Filtered as noise</span>
+                    <span className="text-gray-600 font-mono">{stats.rejected}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between pt-1.5 mt-1.5 border-t border-gray-800/50">
+                  <span className="text-gray-400">Categories tracked</span>
+                  <span className="text-white font-mono">{stats?.categories ? Object.keys(stats.categories).length : '—'}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Session 1131 Phase 2 — view toggle between All Signals + Curated Top 10 */}
@@ -402,7 +448,13 @@ export default function App() {
             </div>
           )
         ) : signals.length === 0 ? (
-          <div className="text-center p-12 text-gray-600">No signals found. Run the seed script to populate demo data.</div>
+          <div className="text-center p-12 text-gray-600">
+            <div className="mb-2">No insight-grade signals in this category yet.</div>
+            <div className="text-xs text-gray-700">
+              Backend pipeline is running. As new headlines cluster into coherent themes,
+              they'll appear here. Try "All Signals" or come back tomorrow.
+            </div>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {signals.map(signal => (
@@ -410,6 +462,8 @@ export default function App() {
             ))}
           </div>
         )}
+
+        <PaidInterestForm />
       </div>
     </div>
   )
@@ -454,6 +508,227 @@ function CuratedSignalCard({ signal, onClick }: { signal: CuratedSignal; onClick
     </div>
   )
 }
+
+// ── Paid-interest form (Session 1138 — Decision 13 demand-gate) ───────────
+// Honest claims per UDB_TRANSLATION_LAYER §2:
+//   - "We'll email you when paid launches" (true)
+//   - "We may reach out individually if your use case is interesting" (true)
+//   - NO promise of a launch date, discount, or that paid will ever launch.
+
+type FormState = 'collapsed' | 'expanded' | 'submitted'
+
+function PaidInterestForm() {
+  const dismissKey = 'signal-studio-paid-interest-dismissed-v1'
+  const [dismissed, setDismissed] = useState<boolean>(() => {
+    try { return localStorage.getItem(dismissKey) === '1' } catch { return false }
+  })
+  const [state, setState] = useState<FormState>('collapsed')
+  const [email, setEmail] = useState('')
+  const [useCase, setUseCase] = useState('')
+  const [willingPay, setWillingPay] = useState('')
+  const [workspaceSize, setWorkspaceSize] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [deduped, setDeduped] = useState(false)
+
+  if (dismissed) return null
+
+  function dismiss() {
+    try { localStorage.setItem(dismissKey, '1') } catch { /* ignore */ }
+    setDismissed(true)
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    setError(null)
+    if (!email.trim() || !useCase.trim()) {
+      setError('email and use case are both required')
+      return
+    }
+    if (useCase.length > 140) {
+      setError('use case must be ≤140 characters')
+      return
+    }
+    setSubmitting(true)
+    try {
+      const body: Record<string, unknown> = {
+        email: email.trim(),
+        use_case: useCase.trim(),
+      }
+      if (willingPay.trim()) {
+        const n = parseInt(willingPay, 10)
+        if (Number.isFinite(n) && n >= 0) body.willing_pay = n
+      }
+      if (workspaceSize) body.workspace_size = workspaceSize
+      const r = await fetch(`${API}/paid-interest`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const d = await r.json()
+      if (!r.ok) {
+        setError(typeof d.detail === 'string' ? d.detail : JSON.stringify(d.detail || d))
+      } else {
+        setDeduped(Boolean(d.deduped))
+        setState('submitted')
+      }
+    } catch (err: any) {
+      setError(err.message || 'submission failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (state === 'collapsed') {
+    return (
+      <div className="mt-12 mb-6 p-4 rounded-xl bg-blue-950/30 border border-blue-900/40 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Bell size={16} className="text-blue-400" />
+          <div>
+            <div className="text-sm text-white font-medium">Want a paid version of SignalStudio?</div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              We're not paid yet. Tell us what you'd use it for — we'll email you if/when a paid tier launches.
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setState('expanded')}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white transition-colors"
+          >
+            Notify me
+          </button>
+          <button
+            onClick={dismiss}
+            aria-label="Dismiss"
+            className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800/50 transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (state === 'submitted') {
+    return (
+      <div className="mt-12 mb-6 p-5 rounded-xl bg-emerald-950/30 border border-emerald-900/40 flex items-center gap-3">
+        <CheckCircle size={18} className="text-emerald-400 flex-shrink-0" />
+        <div className="flex-1">
+          <div className="text-sm text-white font-medium">
+            {deduped ? 'Already captured.' : 'Got it.'}
+          </div>
+          <div className="text-xs text-gray-400 mt-0.5">
+            We'll email you at the launch. No automated follow-ups before then.
+          </div>
+        </div>
+        <button onClick={dismiss} aria-label="Dismiss"
+          className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800/50 transition-colors">
+          <X size={14} />
+        </button>
+      </div>
+    )
+  }
+
+  // expanded
+  return (
+    <form onSubmit={submit} className="mt-12 mb-6 p-5 rounded-xl bg-blue-950/30 border border-blue-900/40 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Bell size={16} className="text-blue-400" />
+          <h3 className="text-sm font-medium text-white">Notify me when SignalStudio paid launches</h3>
+        </div>
+        <button type="button" onClick={() => setState('collapsed')} aria-label="Cancel"
+          className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800/50 transition-colors">
+          <X size={14} />
+        </button>
+      </div>
+      <p className="text-xs text-gray-500 leading-relaxed">
+        We're pre-launch. No date promised, no early-access discount promised.
+        This just tells us there's demand — and lets us email you if it ships.
+      </p>
+      <div className="space-y-2">
+        <label className="block text-xs text-gray-400">Email <span className="text-red-400">*</span></label>
+        <input
+          type="email"
+          required
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:border-blue-500 focus:outline-none"
+        />
+      </div>
+      <div className="space-y-2">
+        <label className="block text-xs text-gray-400">
+          What would you use it for? <span className="text-red-400">*</span>
+          <span className="text-gray-600 ml-2">({useCase.length}/140)</span>
+        </label>
+        <input
+          type="text"
+          required
+          maxLength={140}
+          value={useCase}
+          onChange={e => setUseCase(e.target.value)}
+          placeholder="e.g. weekly intelligence brief for my fund's research team"
+          className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:border-blue-500 focus:outline-none"
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <label className="block text-xs text-gray-400">
+            Would-pay $/mo <span className="text-gray-600">(optional)</span>
+          </label>
+          <input
+            type="number"
+            min="0"
+            value={willingPay}
+            onChange={e => setWillingPay(e.target.value)}
+            placeholder="49"
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm placeholder-gray-600 focus:border-blue-500 focus:outline-none"
+          />
+        </div>
+        <div className="space-y-2">
+          <label className="block text-xs text-gray-400">
+            Team size <span className="text-gray-600">(optional)</span>
+          </label>
+          <select
+            value={workspaceSize}
+            onChange={e => setWorkspaceSize(e.target.value)}
+            className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white text-sm focus:border-blue-500 focus:outline-none"
+          >
+            <option value="">—</option>
+            <option value="solo">Solo</option>
+            <option value="2-5">2-5</option>
+            <option value="6-20">6-20</option>
+            <option value="20+">20+</option>
+          </select>
+        </div>
+      </div>
+      {error && (
+        <div className="p-2 rounded-lg bg-red-900/30 border border-red-700/50 text-red-200 text-xs">
+          {error}
+        </div>
+      )}
+      <div className="flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={() => setState('collapsed')}
+          className="px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-white transition-colors"
+        >
+          Cancel
+        </button>
+        <button
+          type="submit"
+          disabled={submitting || !email.trim() || !useCase.trim()}
+          className="px-4 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white transition-colors"
+        >
+          {submitting ? 'Submitting…' : 'Notify me at launch'}
+        </button>
+      </div>
+    </form>
+  )
+}
+
 
 // ── Brain bridge page ─────────────────────────────────────────────────────
 function BrainPage() {

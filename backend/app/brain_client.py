@@ -455,3 +455,76 @@ def list_artifacts(
         "next_offset": response.get("next_offset"),
         "results": response.get("results", []),
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Fleet paid-interest — Session 1138 (Decision 13 demand-gate)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def submit_paid_interest(
+    *,
+    email: str,
+    use_case: str,
+    willing_pay: Optional[int] = None,
+    workspace_size: Optional[str] = None,
+    user_id_claim: Optional[str] = None,
+) -> dict[str, Any]:
+    """Submit a paid-interest signal to u-d-b's fleet endpoint.
+
+    Calls ``POST /api/fleet/paid-interest/`` with HMAC signing. u-d-b's
+    view enforces server-side dedup ((app_slug, email, use_case) within
+    7 days = no-op return existing id). The calling code should still
+    do its own per-IP rate-limit + email dedup before getting here
+    (defense in depth — u-d-b's dedup is the safety net).
+
+    Args:
+        email: submitter's email (required).
+        use_case: short text ≤140 chars (required).
+        willing_pay: optional monthly $ they'd pay.
+        workspace_size: optional sizing signal ("solo"/"2-5"/"6-20"/"20+").
+        user_id_claim: optional fleet-app-side user id when signed in.
+
+    Returns dict:
+        ok (bool), id (str), deduped (bool), message (str),
+        status_code (int on failure), error (str on failure).
+    """
+    base = os.environ.get("BRAIN_URL", DEFAULT_URL).rstrip("/")
+    host_override = os.environ.get("BRAIN_HOST_HEADER", "localhost")
+
+    body: dict[str, Any] = {
+        "email": email,
+        "use_case": use_case,
+    }
+    if willing_pay is not None:
+        body["willing_pay"] = willing_pay
+    if workspace_size:
+        body["workspace_size"] = workspace_size
+    if user_id_claim:
+        body["user_id_claim"] = user_id_claim
+
+    fleet_path = "/api/fleet/paid-interest/"
+    response, status = _http_request(
+        f"{base}{fleet_path}",
+        "POST",
+        body,
+        token=None,  # fleet-only endpoint; HMAC signature carries identity
+        host_header=host_override,
+        fleet_path=fleet_path,
+    )
+    if status not in (200, 201):
+        err = response.get("error") if isinstance(response, dict) else None
+        return {
+            "ok": False,
+            "error": (err.get("message") if isinstance(err, dict) else None)
+                     or response.get("error")
+                     or f"submit_paid_interest returned HTTP {status}",
+            "status_code": status,
+        }
+    return {
+        "ok": True,
+        "id": response.get("id"),
+        "deduped": response.get("deduped", False),
+        "message": response.get("message", "captured"),
+        "status_code": status,
+    }
