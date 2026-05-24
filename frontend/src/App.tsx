@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Activity, Zap, TrendingUp, Shield, Briefcase, ChevronRight, ArrowLeft, Star, ExternalLink, CheckCircle, Clock, BarChart3, Bell, X } from 'lucide-react'
+import { Activity, Zap, TrendingUp, Shield, Briefcase, ChevronRight, ArrowLeft, Star, ExternalLink, CheckCircle, Clock, BarChart3, Bell, X, Sparkles, RefreshCw, MessageSquare } from 'lucide-react'
 import './App.css'
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:8003/api'
@@ -34,6 +34,14 @@ interface SourceItem {
 interface ActionCardData {
   id: string; title: string; steps: Array<{ step: string; priority: string }>
   action_type: string; status: string
+  // Session 1140 (A) — pre-generated action card fields from u-d-b's
+  // curator. NULL on legacy on-demand cards. `is_curated_pregen` is
+  // the derived discriminator the UI should branch on (Rigby PR-review
+  // suggestion on signal-studio#18).
+  outreach_draft?: string
+  external_id?: string | null
+  generated_by?: string | null
+  is_curated_pregen?: boolean
 }
 
 interface Stats {
@@ -218,25 +226,84 @@ function SignalDetail({ signalId, onBack }: { signalId: string; onBack: () => vo
       {action_cards.length > 0 && (
         <div className="mb-6">
           <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wide mb-3 flex items-center gap-2">
-            <CheckCircle size={14} /> Action Plan
+            <CheckCircle size={14} />
+            {action_cards.some(a => a.is_curated_pregen)
+              ? 'Pre-generated Action Plan'
+              : 'Action Plan'}
           </h2>
-          {action_cards.map(ac => (
-            <div key={ac.id} className="p-5 rounded-xl bg-gradient-to-br from-blue-950/40 to-purple-950/20 border border-blue-800/30">
-              <h3 className="text-white font-semibold mb-3">{ac.title}</h3>
-              <div className="space-y-2">
-                {ac.steps.map((step, i) => (
-                  <div key={i} className="flex items-start gap-3">
-                    <span className={`text-[10px] px-1.5 py-0.5 rounded mt-0.5 ${
-                      step.priority === 'high' ? 'bg-red-500/20 text-red-400' :
-                      step.priority === 'medium' ? 'bg-amber-500/20 text-amber-400' :
-                      'bg-gray-800 text-gray-500'
-                    }`}>{step.priority}</span>
-                    <span className="text-sm text-gray-300">{step.step}</span>
+          {action_cards.map(ac => {
+            // Session 1140 (A): the curated pre-generated path lights
+            // up extra UI affordances: action_type badge, status pill
+            // (draft vs needs_regen), and the outreach_draft block
+            // when populated. Legacy on-demand cards still render via
+            // the same component but only see title + steps.
+            const isPregen = ac.is_curated_pregen === true
+            const needsRegen = isPregen && ac.status === 'needs_regen'
+            const actionTypeBadge: Record<string, string> = {
+              investigate: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+              invest:      'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+              build:       'bg-purple-500/20 text-purple-400 border-purple-500/30',
+              hire:        'bg-amber-500/20 text-amber-400 border-amber-500/30',
+              pitch:       'bg-pink-500/20 text-pink-400 border-pink-500/30',
+            }
+            const typeStyle = actionTypeBadge[ac.action_type] || 'bg-gray-800 text-gray-400 border-gray-700'
+            return (
+              <div
+                key={ac.id}
+                className={`p-5 rounded-xl border mb-3 ${
+                  needsRegen
+                    ? 'bg-gradient-to-br from-gray-900/60 to-amber-950/10 border-amber-700/30'
+                    : 'bg-gradient-to-br from-blue-950/40 to-purple-950/20 border-blue-800/30'
+                }`}
+              >
+                {/* Header row: action_type + status + provenance */}
+                {isPregen && (
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className={`text-[10px] uppercase tracking-wide px-2 py-0.5 rounded border ${typeStyle}`}>
+                      {ac.action_type}
+                    </span>
+                    {needsRegen ? (
+                      <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 flex items-center gap-1">
+                        <RefreshCw size={10} /> Needs regen
+                      </span>
+                    ) : (
+                      <span className="text-[10px] uppercase tracking-wide px-2 py-0.5 rounded bg-green-500/10 text-green-400 flex items-center gap-1">
+                        <Sparkles size={10} /> Pre-generated
+                      </span>
+                    )}
+                    {ac.generated_by && !needsRegen && (
+                      <span className="text-[10px] text-gray-600 ml-auto">{ac.generated_by}</span>
+                    )}
                   </div>
-                ))}
+                )}
+                <h3 className="text-white font-semibold mb-3">{ac.title}</h3>
+                <div className="space-y-2">
+                  {ac.steps.map((step, i) => (
+                    <div key={i} className="flex items-start gap-3">
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded mt-0.5 ${
+                        step.priority === 'high' ? 'bg-red-500/20 text-red-400' :
+                        step.priority === 'medium' ? 'bg-amber-500/20 text-amber-400' :
+                        'bg-gray-800 text-gray-500'
+                      }`}>{step.priority}</span>
+                      <span className="text-sm text-gray-300">{step.step}</span>
+                    </div>
+                  ))}
+                </div>
+                {/* Outreach draft — only when populated. Pre-formatted
+                    so line breaks survive; copyable as plain text. */}
+                {isPregen && ac.outreach_draft && ac.outreach_draft.length > 0 && (
+                  <div className="mt-4 pt-4 border-t border-gray-800/60">
+                    <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-gray-500 mb-2">
+                      <MessageSquare size={10} /> Outreach draft
+                    </div>
+                    <div className="text-sm text-gray-300 leading-relaxed whitespace-pre-wrap font-mono bg-black/40 rounded p-3 border border-gray-800">
+                      {ac.outreach_draft}
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
